@@ -43,7 +43,8 @@ jobs:
           git config --local user.email "github-actions@github-actions.com"
           git add status.json
           git commit -m "Update tracking mapping" || echo "No changes to commit"
-          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
-          git push
+          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
+          git push origin HEAD:master
+
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
