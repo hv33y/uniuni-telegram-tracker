@@ -3,19 +3,21 @@ import json
 import requests
 from datetime import datetime, timedelta
 
-# Telegram config
+# --- Config ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 UNIUNI_API_KEY = os.getenv("UNIUNI_API_KEY")
 
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not UNIUNI_API_KEY:
-    raise Exception("Missing TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, or UNIUNI_API_KEY!")
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    raise Exception("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID!")
+if not UNIUNI_API_KEY:
+    print("[WARN] UNIUNI_API_KEY not set. UniUni tracking will be skipped.")
 
 STATUS_FILE = "status.json"
 TRACKING_FILE = "tracking.txt"
-
 RESET_TRACKING = os.getenv("INPUT_RESET_TRACKING", "no").lower() == "yes"
 
+# Load previous status
 if os.path.exists(STATUS_FILE) and not RESET_TRACKING:
     with open(STATUS_FILE, "r") as f:
         previous_status = json.load(f)
@@ -24,7 +26,7 @@ else:
 
 current_status = {}
 
-# Read tracking numbers
+# Load tracking numbers
 TRACKING_NUMBERS = []
 if os.path.exists(TRACKING_FILE):
     with open(TRACKING_FILE, "r") as f:
@@ -37,6 +39,7 @@ if not TRACKING_NUMBERS:
     print("[WARN] No tracking numbers found in tracking.txt")
     exit(0)
 
+# --- Helper functions ---
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
@@ -48,8 +51,11 @@ def est_from_unix(ts):
     dt = datetime.utcfromtimestamp(ts) - timedelta(hours=5)
     return dt.strftime("%Y-%m-%d %H:%M")
 
-# --- UniUni handler ---
+# --- UniUni Handler ---
 def handle_uniuni(tracking):
+    if not UNIUNI_API_KEY:
+        return []
+
     api_url = f"https://delivery-api.uniuni.ca/cargo/trackinguniuninew?id={tracking}&key={UNIUNI_API_KEY}"
     resp = requests.get(api_url)
     if not resp.ok:
@@ -74,7 +80,7 @@ def handle_uniuni(tracking):
             })
     return events
 
-# --- FedEx handler ---
+# --- FedEx Handler ---
 def handle_fedex(tracking):
     api_url = f"https://www.fedex.com/trackingCal/track?data={{\"TrackPackagesRequest\":{\"appType\":\"wtrk\",\"trackingInfo\":[{{\"trackingNumberInfo\":{{\"trackingNumber\":\"{tracking}\"}}}}],\"trackingNumberInfo\":{\"trackingNumber\":\"{tracking}\"},\"action\":\"trackpackages\",\"language\":\"en\",\"locale\":\"en_US\",\"version\":\"1\"}}}}"
     resp = requests.get(api_url)
@@ -85,10 +91,9 @@ def handle_fedex(tracking):
     data = resp.json()
     events = []
 
-    # Simple parser: you can adjust based on FedEx API JSON structure
     for pkg in data.get("TrackPackagesResponse", {}).get("packageList", []):
         for event in pkg.get("scanEventList", []):
-            ts = event.get("date")  # usually "2025-12-02T14:32:00-05:00"
+            ts = event.get("date")  # ISO format
             time_str = ts.replace("T", " ").split("-")[0] if ts else "Unknown"
             events.append({
                 "time": time_str,
@@ -97,34 +102,55 @@ def handle_fedex(tracking):
             })
     return events
 
-# --- Main loop ---
+# --- Main processing ---
+uniuni_updates = []
+fedex_updates = []
+
 for tracking in TRACKING_NUMBERS:
     print(f"[INFO] Checking tracking number {tracking}")
 
-    # Decide carrier
     if tracking.startswith("N25"):
         events = handle_uniuni(tracking)
+        if not events or previous_status.get(tracking) == events:
+            continue
+        uniuni_updates.append((tracking, events))
+        current_status[tracking] = events
+
     elif tracking.startswith("FE"):
         events = handle_fedex(tracking)
+        if not events or previous_status.get(tracking) == events:
+            continue
+        fedex_updates.append((tracking, events))
+        current_status[tracking] = events
+
     else:
         print(f"[WARN] Unknown carrier for {tracking}")
         continue
 
-    if not events:
-        continue
+# --- Send Telegram message ---
+messages = []
 
-    if previous_status.get(tracking) == events:
-        continue
+if uniuni_updates:
+    messages.append("**UniUni Tracker Updates:**")
+    for tracking, events in uniuni_updates:
+        messages.append(f"Tracking: {tracking}")
+        for ev in events:
+            messages.append(f"{ev['time']} | {ev['location']} | {ev['status']}")
+        messages.append("")
 
-    current_status[tracking] = events
+if fedex_updates:
+    messages.append("**FedEx Tracker Updates:**")
+    for tracking, events in fedex_updates:
+        messages.append(f"Tracking: {tracking}")
+        for ev in events:
+            messages.append(f"{ev['time']} | {ev['location']} | {ev['status']}")
+        messages.append("")
 
-    msg_lines = [f"Tracking Update for {tracking}:"]
-    for ev in events:
-        line = f"{ev['time']} | {ev['location']} | {ev['status']}"
-        msg_lines.append(line)
-
-    send_telegram("\n".join(msg_lines))
-    print(f"[INFO] Sent update for {tracking}")
+if messages:
+    send_telegram("\n".join(messages))
+    print("[INFO] Sent updates to Telegram")
+else:
+    print("[INFO] No new updates to send")
 
 with open(STATUS_FILE, "w") as f:
     json.dump(current_status, f, indent=2)
