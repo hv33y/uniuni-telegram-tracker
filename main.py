@@ -139,13 +139,29 @@ def track_uniuni(tracking_number):
         logging.error(f"UniUni Scan Error: {e}")
         return {"status": "System Error", "details": f"Script Error: {str(e)}", "url": tracking_url}
 
-def get_fedex_token():
-    """Authenticates with FedEx to get an access token."""
+def get_fedex_session():
+    """
+    Authenticates with FedEx.
+    Tries PRODUCTION first, then SANDBOX.
+    Returns: (access_token, base_api_url, error_message)
+    """
     if not FEDEX_CLIENT_ID or not FEDEX_CLIENT_SECRET:
-        logging.error("FedEx credentials missing.")
-        return None
-        
-    url = "https://apis.fedex.com/oauth/token"
+        return None, None, "Credentials missing in GitHub Secrets."
+
+    # Define environments to try
+    environments = [
+        {
+            "name": "Production",
+            "auth_url": "https://apis.fedex.com/oauth/token",
+            "api_base": "https://apis.fedex.com"
+        },
+        {
+            "name": "Sandbox",
+            "auth_url": "https://apis-sandbox.fedex.com/oauth/token",
+            "api_base": "https://apis-sandbox.fedex.com"
+        }
+    ]
+
     payload = {
         "grant_type": "client_credentials",
         "client_id": FEDEX_CLIENT_ID,
@@ -153,26 +169,40 @@ def get_fedex_token():
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json().get("access_token")
-        else:
-            logging.error(f"FedEx Auth Failed: {response.text}")
-            return None
-    except Exception as e:
-        logging.error(f"FedEx Auth Error: {e}")
-        return None
+    last_error = ""
+
+    for env in environments:
+        try:
+            logging.info(f"Attempting FedEx Auth on {env['name']}...")
+            response = requests.post(env['auth_url'], data=payload, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                token = response.json().get("access_token")
+                return token, env['api_base'], None
+            else:
+                # Capture specific error for debugging
+                err_data = response.text
+                last_error = f"{env['name']} Auth Failed ({response.status_code}): {err_data[:100]}"
+                logging.error(last_error)
+        except Exception as e:
+            last_error = f"Connection Error: {str(e)}"
+            logging.error(last_error)
+
+    return None, None, last_error
 
 def track_fedex(tracking_number):
     """Fetches REAL tracking data from FedEx API."""
     tracking_url = f"https://www.fedex.com/fedextrack/?trknbr={tracking_number}"
     
-    token = get_fedex_token()
+    # 1. Authenticate
+    token, base_url, auth_error = get_fedex_session()
+    
     if not token:
-        return {"status": "Auth Error", "details": "Could not authenticate with FedEx.", "url": tracking_url}
+        # Return the detailed authentication error to the user
+        return {"status": "Auth Error", "details": f"FedEx: {auth_error}", "url": tracking_url}
 
-    url = "https://apis.fedex.com/track/v1/trackingnumbers"
+    # 2. Track
+    url = f"{base_url}/track/v1/trackingnumbers"
     
     payload = {
         "trackingInfo": [
@@ -195,11 +225,10 @@ def track_fedex(tracking_number):
         response = requests.post(url, json=payload, headers=headers, timeout=15)
         
         if response.status_code != 200:
-             return {"status": f"HTTP {response.status_code}", "details": "FedEx API Error.", "url": tracking_url}
+             return {"status": f"HTTP {response.status_code}", "details": f"FedEx API Error: {response.text[:50]}", "url": tracking_url}
 
         data = response.json()
         
-        # Parse logic for FedEx
         output = data.get("output", {})
         complete_results = output.get("completeTrackResults", [])
         
@@ -208,30 +237,28 @@ def track_fedex(tracking_number):
 
         track_result = complete_results[0].get("trackResults", [])[0]
         
-        # Check for errors in the specific tracking number result
         error_info = track_result.get("error")
         if error_info:
-             return {"status": "Not Found", "details": "Invalid Tracking Number.", "url": tracking_url}
+             # Look for specific error code or message
+             msg = error_info.get("message", "Invalid Tracking Number")
+             return {"status": "Error", "details": f"FedEx says: {msg}", "url": tracking_url}
 
         latest_status_detail = track_result.get("latestStatusDetail", {})
         scan_events = track_result.get("scanEvents", [])
 
-        # Get status description
         status_desc = latest_status_detail.get("description", "In Transit")
         city = latest_status_detail.get("scanLocation", {}).get("city", "")
         state = latest_status_detail.get("scanLocation", {}).get("stateOrProvinceCode", "")
         
-        # Get Time
-        # FedEx returns dates usually like "2023-10-25T10:00:00"
         timestamp_str = ""
         if scan_events:
             timestamp_str = scan_events[0].get("date", "")
-            # Try to format it cleanly
             try:
-                dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                timestamp_str = dt.strftime("%Y-%m-%d %H:%M")
+                # Clean up date format if possible
+                if "T" in timestamp_str:
+                    timestamp_str = timestamp_str.split("T")[0] + " " + timestamp_str.split("T")[1][:5]
             except:
-                pass # Keep original string if parse fails
+                pass 
 
         location_str = f"{city}, {state}".strip(", ")
         
@@ -241,7 +268,6 @@ def track_fedex(tracking_number):
         if timestamp_str:
             detail_text += f" @ {timestamp_str}"
 
-        # Determine Header Status
         header = "Active"
         if "delivered" in status_desc.lower():
             header = "Delivered"
