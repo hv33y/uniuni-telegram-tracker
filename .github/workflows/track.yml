@@ -2,41 +2,48 @@ name: Track Packages
 
 on:
   schedule:
-    - cron: "*/15 * * * *" # every 15 minutes
+    # Run every 30 minutes
+    - cron: '*/30 * * * *'
+  # Allow manual trigger from GitHub Actions tab
   workflow_dispatch:
+  # Allow trigger from Telegram (via Cloudflare Worker)
+  repository_dispatch:
+    types: [manual_refresh]
+
+permissions:
+  contents: write
 
 jobs:
-  uniuni:
-    name: UniUni Tracking
+  track:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: 3.x
+          python-version: '3.9'
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run UniUni Tracker
+        run: |
+          pip install requests
+
+      - name: Run Tracker
+        id: run_tracker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          UNIUNI_API_KEY: ${{ secrets.UNIUNI_API_KEY }}
-          INPUT_RESET_TRACKING: "no"
+          TRACKING_NUMBERS: ${{ secrets.TRACKING_NUMBERS }}
         run: python main.py
 
-  fedex:
-    name: FedEx Tracking
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: 3.x
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run FedEx Tracker
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          INPUT_RESET_TRACKING: "no"
-        run: python main.py
+      - name: Commit Status Update
+        # Only commit if the python script actually changed the json file
+        if: steps.run_tracker.outputs.UPDATED == 'true'
+        run: |
+          git config --global user.name 'PackageBot'
+          git config --global user.email 'bot@noreply.github.com'
+          git add tracking_status.json
+          # [skip ci] prevents this commit from triggering the workflow again
+          git commit -m "Update tracking status [skip ci]"
+          git push
