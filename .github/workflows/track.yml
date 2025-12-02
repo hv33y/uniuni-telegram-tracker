@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "*/30 * * * *"  # every 30 minutes
   workflow_dispatch:
+    inputs:
+      add_tracking:
+        description: "Add a new tracking number (leave empty to skip)"
+        required: false
+        default: ""
+      stop_tracking:
+        description: "Stop tracking a number permanently (leave empty to skip)"
+        required: false
+        default: ""
 
 jobs:
   track:
@@ -22,9 +31,10 @@ jobs:
 
       - name: Run Tracker
         env:
-          TRACKING_NUMBERS: ${{ secrets.TRACKING_NUMBERS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          INPUT_ADD_TRACKING: ${{ github.event.inputs.add_tracking }}
+          INPUT_STOP_TRACKING: ${{ github.event.inputs.stop_tracking }}
         run: python main.py
 
       - name: Commit updated statuses
@@ -32,7 +42,7 @@ jobs:
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github-actions.com"
           git add status.json
-          git commit -m "Update tracking statuses" || echo "No changes to commit"
+          git commit -m "Update tracking mapping" || echo "No changes to commit"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
