@@ -20,20 +20,26 @@ def load_data():
         with open(DATA_FILE, 'r') as f:
             return json.load(f)
     except json.JSONDecodeError:
+        logging.warning(f"Error decoding {DATA_FILE}. Returning empty list.")
         return {"packages": []}
 
 def save_data(data):
     """Saves the updated list back to the JSON file."""
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logging.error(f"Failed to save data to {DATA_FILE}: {e}")
 
 def set_github_output(name, value):
     """Sets an output variable for GitHub Actions."""
-    if "GITHUB_OUTPUT" in os.environ:
-        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+    # Use GITHUB_OUTPUT for modern GitHub Actions runners
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a") as f:
             f.write(f"{name}={value}\n")
     else:
-        # Fallback for local testing or older runners
+        # Fallback for local testing or older runners (though deprecated)
         print(f"::set-output name={name}::{value}")
 
 def send_telegram_message(message, buttons=None):
@@ -60,31 +66,21 @@ def send_telegram_message(message, buttons=None):
         logging.error(f"Failed to send Telegram message: {e}")
 
 # --- Tracking Logic ---
+# NOTE: These are placeholder functions. You must implement the real API/scraper logic here.
 
 def track_uniuni(tracking_number):
-    """
-    Checks UniUni status.
-    """
-    # NOTE: Since UniUni does not have a public API, this function acts as a placeholder.
-    # To make this work realistically, you would likely need to scrape their tracking page.
-    # For now, we return a mock status to prove the bot works.
-    
-    url = f"https://www.uniuni.com/tracking/?tracking_number={tracking_number}"
-    
-    # Real logic would go here:
-    # r = requests.get(...)
-    # status = parse_response(r)
-    
+    """Placeholder for UniUni tracking."""
     return {
         "status": "In Transit (Mock)", 
         "details": "Tracking check simulated.",
-        "url": url
+        "url": f"https://www.uniuni.com/tracking/?tracking_number={tracking_number}"
     }
 
 def track_fedex(tracking_number):
-    """Placeholder for FedEx."""
+    """Placeholder for FedEx tracking."""
+    # This is the future section you requested!
     return {
-        "status": "Pending",
+        "status": "Pending (FedEx Ready)",
         "details": "FedEx integration pending.",
         "url": f"https://www.fedex.com/fedextrack/?trknbr={tracking_number}"
     }
@@ -106,13 +102,13 @@ def perform_check(force_report=False):
         num = pkg['number']
         last_status = pkg.get('last_status')
 
-        # 1. Determine Carrier
+        # 1. Determine Carrier based on naming convention
         if num.upper().startswith("UN") or "UNI" in num.upper() or num.startswith("JY"):
             result = track_uniuni(num)
             carrier = "UniUni"
         else:
             result = track_fedex(num)
-            carrier = "FedEx"
+            carrier = "FedEx" # Ready for your future implementation
 
         current_status = result['status']
 
