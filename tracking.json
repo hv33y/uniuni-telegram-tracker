@@ -2,8 +2,8 @@
   "packages": [
     {
       "number": "N25T1D1344920001",
-      "last_status": "Error",
-      "last_details": "Failed to parse tracking data."
+      "last_status": "System Error",
+      "last_details": "Script Error: HTTPSConnectionPool(host='t.uniuni.com', port=443): Max retries exceeded with url: /api/v1/tracking/N25T1D1344920001 (Caused by NameResolutionError(\"<urllib3.connection.HTTPSConnection object at 0x7f150593dc40>: Failed to resolve 't.uniuni.com' ([Errno -2] Name or service not known)\"))"
     }
   ]
 }
