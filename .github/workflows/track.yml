@@ -3,7 +3,6 @@ name: UniUni Bot Manager
 on:
   schedule:
     - cron: '*/30 * * * *' # Auto-check every 30 mins
-  # Triggered by the Cloudflare Worker when a button is pressed or a command is sent
   repository_dispatch:
     types: [bot_command]
 
@@ -32,7 +31,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        # Execute main.py with mode check
+          # FedEx Keys
+          FEDEX_CLIENT_ID: ${{ secrets.FEDEX_CLIENT_ID }}
+          FEDEX_CLIENT_SECRET: ${{ secrets.FEDEX_CLIENT_SECRET }}
         run: python main.py --mode check
 
       # CASE 2: Manual Command (Add/Delete/Force Check from Telegram)
@@ -42,13 +43,14 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # FedEx Keys
+          FEDEX_CLIENT_ID: ${{ secrets.FEDEX_CLIENT_ID }}
+          FEDEX_CLIENT_SECRET: ${{ secrets.FEDEX_CLIENT_SECRET }}
         run: |
-          # Extract payload data sent by Cloudflare Worker
           MODE="${{ github.event.client_payload.mode }}"
           NUMBER="${{ github.event.client_payload.number }}"
           FORCE="${{ github.event.client_payload.force }}"
           
-          # Construct the command
           CMD="python main.py --mode $MODE"
           
           if [ ! -z "$NUMBER" ]; then
@@ -64,12 +66,10 @@ jobs:
 
       # Commit changes to tracking.json if the script reported an update
       - name: Commit Changes to Data File
-        # Check output from both possible run steps
         if: steps.scheduled_run.outputs.UPDATED == 'true' || steps.manual_run.outputs.UPDATED == 'true'
         run: |
           git config --global user.name 'PackageBot'
           git config --global user.email 'bot@noreply.github.com'
           git add tracking.json
-          # [skip ci] prevents this commit from triggering the workflow again
           git commit -m "Update tracking data [skip ci]"
           git push
