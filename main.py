@@ -2,8 +2,6 @@ import os
 import json
 import requests
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
-import smtplib
 
 # ENV VARIABLES
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -12,8 +10,8 @@ UNIUNI_API_KEY = os.getenv("UNIUNI_API_KEY")
 
 TRACKING_FILE = "tracking.json"
 
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not UNIUNI_API_KEY:
-    raise Exception("Missing TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, or UNIUNI_API_KEY!")
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    raise Exception("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID!")
 
 # Load or initialize tracking file
 if os.path.exists(TRACKING_FILE):
@@ -21,6 +19,10 @@ if os.path.exists(TRACKING_FILE):
         tracking_data = json.load(f)
 else:
     tracking_data = {"uniuni": {}, "fedex": {}}
+
+# Only require UNIUNI_API_KEY if there are UniUni tracking numbers
+if tracking_data.get("uniuni") and not UNIUNI_API_KEY:
+    raise Exception("Missing UNIUNI_API_KEY for UniUni tracking!")
 
 def save_tracking_file():
     with open(TRACKING_FILE, "w") as f:
@@ -47,8 +49,7 @@ def handle_uniuni(tracking):
         for spath in pkg.get("spath_list", []):
             ts_epoch = spath.get("pathTime")
             if ts_epoch:
-                # Convert to EST (UTC-5)
-                dt = datetime.utcfromtimestamp(ts_epoch) - timedelta(hours=5)
+                dt = datetime.utcfromtimestamp(ts_epoch) - timedelta(hours=5)  # EST
                 time_str = dt.strftime("%Y-%m-%d %H:%M")
             else:
                 time_str = "Unknown"
@@ -110,11 +111,9 @@ def process_tracking(tracker_type):
             print(f"[WARN] No events for {tracking}")
             continue
 
-        # Check if last event is new
         latest = events[-1]
         last = last_status.get("last_event")
         if last != latest:
-            # Update status
             tracking_data[tracker_type][tracking]["last_event"] = latest
             new_events.append((tracking, latest))
 
@@ -130,13 +129,12 @@ def notify(events, tracker_type):
 
 # ------------------- MAIN -------------------
 if __name__ == "__main__":
-    # Ensure all tracking numbers have last_event structure
     for tracker_type in ["uniuni", "fedex"]:
         for tracking in tracking_data.get(tracker_type, {}):
             tracking_data[tracker_type][tracking].setdefault("last_event", None)
 
-    uniuni_events = process_tracking("uniuni")
-    fedex_events = process_tracking("fedex")
+    uniuni_events = process_tracking("uniuni") if tracking_data.get("uniuni") else []
+    fedex_events = process_tracking("fedex") if tracking_data.get("fedex") else []
 
     notify(uniuni_events, "uniuni")
     notify(fedex_events, "fedex")
