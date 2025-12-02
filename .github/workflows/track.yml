@@ -1,58 +1,32 @@
-name: Track UniUni Packages
+name: UniUni Tracker
 
 on:
-  workflow_dispatch:
-    inputs:
-      add_tracking:
-        description: 'Add a tracking number'
-        required: false
-        default: ''
-      stop_tracking:
-        description: 'Stop tracking a number'
-        required: false
-        default: ''
   schedule:
-    # Every 15 minutes
-    - cron: '*/15 * * * *'
+    # Runs every 30 minutes
+    - cron: "*/30 * * * *"
+  workflow_dispatch:  # Allows manual trigger
 
 jobs:
   track:
     runs-on: ubuntu-latest
-    steps:
-      # Checkout repo
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          persist-credentials: true
 
-      # Setup Python
-      - name: Setup Python
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: 3.x
 
-      # Install dependencies
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 pytz
+        run: pip install -r requirements.txt
 
-      # Run main.py
-      - name: Run tracking script
+      - name: Run UniUni Tracker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          INPUT_ADD_TRACKING: ${{ github.event.inputs.add_tracking }}
-          INPUT_STOP_TRACKING: ${{ github.event.inputs.stop_tracking }}
+          UNIUNI_API_KEY: ${{ secrets.UNIUNI_API_KEY }}
+          INPUT_ADD_TRACKING: N25T1D1344920001  # Add tracking numbers here
+          INPUT_STOP_TRACKING: ""                # Remove tracking numbers here
         run: python main.py
-
-      # Commit updated status.json if changed
-      - name: Commit updates
-        run: |
-          git config --local user.name "github-actions"
-          git config --local user.email "github-actions@github-actions.com"
-          git add status.json
-          git commit -m "Update tracking mapping" || echo "No changes to commit"
-          git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
