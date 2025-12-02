@@ -3,6 +3,7 @@ import json
 import requests
 import logging
 import argparse
+import base64
 from datetime import datetime
 
 # Configure logging
@@ -13,6 +14,9 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") 
 FEDEX_CLIENT_ID = os.environ.get("FEDEX_CLIENT_ID")
 FEDEX_CLIENT_SECRET = os.environ.get("FEDEX_CLIENT_SECRET")
+# UPS Keys (Optional - Code will auto-detect if these are present)
+UPS_CLIENT_ID = os.environ.get("UPS_CLIENT_ID")
+UPS_CLIENT_SECRET = os.environ.get("UPS_CLIENT_SECRET")
 DATA_FILE = "tracking.json"
 
 def load_data():
@@ -145,13 +149,61 @@ def track_fedex(tracking_number, full_history=False):
         return {"status": header, "details": detail_text, "events": formatted_events, "url": tracking_url}
     except Exception as e: return {"status": "Error", "details": str(e), "events": [], "url": tracking_url}
 
-# --- UPS TRACKING (LINK MODE) ---
+# --- UPS TRACKING (HYBRID: API or LINK) ---
+def get_ups_token():
+    if not UPS_CLIENT_ID or not UPS_CLIENT_SECRET: return None
+    url = "https://onlinetools.ups.com/security/v1/oauth/token"
+    credentials = f"{UPS_CLIENT_ID}:{UPS_CLIENT_SECRET}"
+    encoded = base64.b64encode(credentials.encode()).decode()
+    headers = {"Content-Type": "application/x-www-form-urlencoded", "Authorization": f"Basic {encoded}"}
+    try:
+        r = requests.post(url, headers=headers, data={"grant_type": "client_credentials"}, timeout=10)
+        return r.json().get("access_token") if r.status_code == 200 else None
+    except: return None
+
 def track_ups(tracking_number, full_history=False):
-    # Free mode: UPS blocks scrapers, so we provide a direct link.
     tracking_url = f"https://www.ups.com/track?loc=en_US&tracknum={tracking_number}"
+    
+    # 1. Try API if keys exist
+    token = get_ups_token()
+    if token:
+        try:
+            url = f"https://onlinetools.ups.com/api/track/v1/details/{tracking_number}"
+            headers = {"Authorization": f"Bearer {token}", "transId": "1", "transactionSrc": "Bot"}
+            r = requests.get(url, headers=headers, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                pkg = data.get("trackResponse", {}).get("shipment", [])[0].get("package", [])[0]
+                latest = pkg.get("activity", [])[0]
+                desc = latest.get("status", {}).get("description", "Active")
+                loc = latest.get("location", {}).get("address", {}).get("city", "")
+                
+                # Time parsing
+                d = latest.get("date", "")
+                t = latest.get("time", "")
+                time_str = ""
+                if d and t: time_str = format_time(f"{d} {t}", custom_format="%Y%m%d %H%M%S")
+                
+                detail_text = f"{desc} ({loc}) @ {time_str}" if loc else f"{desc} @ {time_str}"
+                header = "Delivered" if "delivered" in desc.lower() else "Active"
+                
+                formatted_events = []
+                if full_history:
+                    for e in pkg.get("activity", []):
+                        e_desc = e.get("status", {}).get("description", "")
+                        e_loc = e.get("location", {}).get("address", {}).get("city", "")
+                        e_tm = format_time(f"{e.get('date')} {e.get('time')}", custom_format="%Y%m%d %H%M%S")
+                        line = f"🕒 *{e_tm}*\n└ {e_desc}"
+                        if e_loc: line += f" ({e_loc})"
+                        formatted_events.append(line)
+                
+                return {"status": header, "details": detail_text, "events": formatted_events, "url": tracking_url}
+        except: pass
+
+    # 2. Fallback to Link Mode (If no keys or API failed)
     return {
-        "status": "UPS Tracking",
-        "details": "Click tracking number to view status",
+        "status": "Check Link ↗️",
+        "details": "Protected. Tap number to view.",
         "events": [],
         "url": tracking_url
     }
@@ -186,8 +238,8 @@ def perform_check(force_report=False, specific_user_id=None):
             current_details = result['details']
             is_changed = current_details != pkg.get('last_details', '')
             
-            # For UPS (Link Mode), status never changes automatically, so we rely on force_report
-            if is_changed:
+            # For UPS (Link Mode), we only update if force_report because status won't change
+            if is_changed and carrier_name != "UPS":
                 updates_found = True
                 pkg['last_status'] = result['status']
                 pkg['last_details'] = current_details
@@ -203,8 +255,10 @@ def perform_check(force_report=False, specific_user_id=None):
                 line = f"{icon} *{carrier_name}*: {num_display}\n{detail_view}"
                 report_lines.append(line)
                 
-                # Only add History button if the carrier supports it (UniUni/FedEx)
-                if carrier_name != "UPS":
+                # Only add History button if the carrier supports fetching
+                if carrier_name == "UPS" and result['status'] == "Check Link ↗️":
+                    pass # Don't show history button for Link Mode
+                else:
                     history_buttons.append([{"text": f"📜 History: {num}", "callback_data": f"history_{num}"}])
 
         if report_lines:
