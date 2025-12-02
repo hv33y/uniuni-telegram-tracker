@@ -33,13 +33,11 @@ def save_data(data):
 
 def set_github_output(name, value):
     """Sets an output variable for GitHub Actions."""
-    # Use GITHUB_OUTPUT for modern GitHub Actions runners
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
         with open(output_path, "a") as f:
             f.write(f"{name}={value}\n")
     else:
-        # Fallback for local testing or older runners (though deprecated)
         print(f"::set-output name={name}::{value}")
 
 def send_telegram_message(message, buttons=None):
@@ -66,10 +64,10 @@ def send_telegram_message(message, buttons=None):
         logging.error(f"Failed to send Telegram message: {e}")
 
 # --- Tracking Logic ---
-# NOTE: These are placeholder functions. You must implement the real API/scraper logic here.
 
 def track_uniuni(tracking_number):
     """Placeholder for UniUni tracking."""
+    # Logic to scrape or hit API would go here
     return {
         "status": "In Transit (Mock)", 
         "details": "Tracking check simulated.",
@@ -78,7 +76,6 @@ def track_uniuni(tracking_number):
 
 def track_fedex(tracking_number):
     """Placeholder for FedEx tracking."""
-    # This is the future section you requested!
     return {
         "status": "Pending (FedEx Ready)",
         "details": "FedEx integration pending.",
@@ -101,14 +98,20 @@ def perform_check(force_report=False):
     for pkg in packages:
         num = pkg['number']
         last_status = pkg.get('last_status')
+        u_num = num.upper()
 
-        # 1. Determine Carrier based on naming convention
-        if num.upper().startswith("UN") or "UNI" in num.upper() or num.startswith("JY"):
+        # --- CARRIER DETECTION ---
+        # Logic: FedEx tracking numbers are usually purely numeric (12, 15, 20, or 22 digits).
+        # Default to UniUni since it's the primary tracker, unless it looks strictly like FedEx.
+        
+        # Check if the number is purely numeric and fits common FedEx lengths
+        if u_num.isdigit() and len(u_num) in [12, 15, 20, 22]:
+            result = track_fedex(num)
+            carrier = "FedEx"
+        else:
+            # Default to UniUni for alphanumeric numbers (N..., BA..., UN..., JY... etc.)
             result = track_uniuni(num)
             carrier = "UniUni"
-        else:
-            result = track_fedex(num)
-            carrier = "FedEx" # Ready for your future implementation
 
         current_status = result['status']
 
@@ -120,22 +123,18 @@ def perform_check(force_report=False):
             pkg['last_status'] = current_status
             pkg['last_details'] = result['details']
 
-        # 3. Build Report Line (if changed OR if forced)
+        # 3. Build Report Line
         if is_changed or force_report:
             icon = "🟢" if is_changed else "📦"
             line = f"{icon} *{carrier}*: `{num}`\nStatus: {current_status}"
             report_lines.append(line)
 
-    # 4. Save if data changed
     if updates_found:
         save_data(data)
 
-    # 5. Send Telegram Notification
     if report_lines:
         header = "*🔔 Status Updates*" if not force_report else "*📋 Full Tracking Report*"
         full_message = f"{header}\n\n" + "\n\n".join(report_lines)
-        
-        # Add a refresh button for convenience
         buttons = [[{"text": "🔄 Refresh Again", "callback_data": "refresh"}]]
         send_telegram_message(full_message, buttons)
 
@@ -145,16 +144,11 @@ def perform_check(force_report=False):
 
 def add_package(number):
     data = load_data()
-    # Check if exists
     if any(p['number'] == number for p in data['packages']):
         send_telegram_message(f"⚠️ Tracking number `{number}` is already in your list.")
         return False
 
-    new_pkg = {
-        "number": number,
-        "last_status": "New",
-        "last_details": "Just added"
-    }
+    new_pkg = {"number": number, "last_status": "New", "last_details": "Just added"}
     data['packages'].append(new_pkg)
     save_data(data)
     
@@ -167,8 +161,6 @@ def add_package(number):
 def delete_package(number):
     data = load_data()
     original_count = len(data['packages'])
-    
-    # Filter out the number
     data['packages'] = [p for p in data['packages'] if p['number'] != number]
 
     if len(data['packages']) < original_count:
@@ -183,9 +175,9 @@ def delete_package(number):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["check", "add", "delete"], required=True, help="Action to perform")
-    parser.add_argument("--number", help="Tracking number for add/delete")
-    parser.add_argument("--force", action="store_true", help="Force sending a report even if no changes")
+    parser.add_argument("--mode", choices=["check", "add", "delete"], required=True)
+    parser.add_argument("--number")
+    parser.add_argument("--force", action="store_true")
     
     args = parser.parse_args()
     
@@ -193,18 +185,9 @@ if __name__ == "__main__":
 
     if args.mode == "check":
         changed = perform_check(force_report=args.force)
-    
-    elif args.mode == "add":
-        if args.number:
-            changed = add_package(args.number)
-        else:
-            logging.error("No number provided for add mode")
-            
-    elif args.mode == "delete":
-        if args.number:
-            changed = delete_package(args.number)
-        else:
-            logging.error("No number provided for delete mode")
+    elif args.mode == "add" and args.number:
+        changed = add_package(args.number)
+    elif args.mode == "delete" and args.number:
+        changed = delete_package(args.number)
 
-    # Output result for GitHub Actions
     set_github_output("UPDATED", str(changed).lower())
