@@ -24,18 +24,19 @@ jobs:
       - name: Install Dependencies
         run: pip install requests
 
-      # CASE 1: Scheduled Run (Runs for ALL users)
+      # CASE 1: Scheduled Run
       - name: Run Scheduled Check
         if: github.event_name == 'schedule'
         id: scheduled_run
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # Admin ID no longer strictly required for basic function but good for logs
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FEDEX_CLIENT_ID: ${{ secrets.FEDEX_CLIENT_ID }}
           FEDEX_CLIENT_SECRET: ${{ secrets.FEDEX_CLIENT_SECRET }}
         run: python main.py --mode check
 
-      # CASE 2: Manual Command (Runs for SPECIFIC user)
+      # CASE 2: Manual Command
       - name: Run Manual Command
         if: github.event_name == 'repository_dispatch'
         id: manual_run
@@ -51,18 +52,9 @@ jobs:
           USER_ID="${{ github.event.client_payload.chat_id }}"
           
           CMD="python main.py --mode $MODE"
-          
-          if [ ! -z "$USER_ID" ]; then
-            CMD="$CMD --user_id $USER_ID"
-          fi
-          
-          if [ ! -z "$NUMBER" ]; then
-            CMD="$CMD --number $NUMBER"
-          fi
-          
-          if [ "$FORCE" == "true" ]; then
-            CMD="$CMD --force"
-          fi
+          if [ ! -z "$USER_ID" ]; then CMD="$CMD --user_id $USER_ID"; fi
+          if [ ! -z "$NUMBER" ]; then CMD="$CMD --number $NUMBER"; fi
+          if [ "$FORCE" == "true" ]; then CMD="$CMD --force"; fi
           
           echo "Executing: $CMD"
           $CMD
