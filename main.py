@@ -1,68 +1,80 @@
-import os
 import json
+import os
 import requests
-from trackers import uniuni
+from datetime import datetime
 
 STATUS_FILE = "status.json"
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TRACKING_NUMBERS_FILE = "tracking_numbers.json"  # optional if you want persistent list
 
-# GitHub workflow dispatch inputs
-ADD_TRACKING = os.getenv("INPUT_ADD_TRACKING", "").strip()
-STOP_TRACKING = os.getenv("INPUT_STOP_TRACKING", "").strip()
+# Environment variables
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+INPUT_ADD_TRACKING = os.environ.get("INPUT_ADD_TRACKING", "").strip()
+INPUT_STOP_TRACKING = os.environ.get("INPUT_STOP_TRACKING", "").strip()
 
-# Load existing tracking mapping
-try:
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    raise Exception("Telegram bot token or chat ID missing!")
+
+# Load or initialize status mapping
+if os.path.exists(STATUS_FILE):
     with open(STATUS_FILE, "r") as f:
-        TRACKER_MAPPING = json.load(f)
-except:
-    TRACKER_MAPPING = {}  # {tracking_number: {"module": "uniuni", "last_status": "..." }}
+        status_data = json.load(f)
+else:
+    status_data = {}
 
-# Handle adding new tracking
-if ADD_TRACKING:
-    if ADD_TRACKING not in TRACKER_MAPPING:
-        TRACKER_MAPPING[ADD_TRACKING] = {"module": "uniuni", "last_status": None}
-        print(f"Added tracking number: {ADD_TRACKING}")
+# Manage tracking numbers dynamically
+tracking_numbers = list(status_data.keys())
+
+if INPUT_ADD_TRACKING:
+    if INPUT_ADD_TRACKING not in tracking_numbers:
+        tracking_numbers.append(INPUT_ADD_TRACKING)
+        print(f"Added tracking number: {INPUT_ADD_TRACKING}")
     else:
-        print(f"Tracking number {ADD_TRACKING} already exists")
+        print(f"Tracking number {INPUT_ADD_TRACKING} already exists.")
 
-# Handle stopping tracking
-if STOP_TRACKING:
-    if STOP_TRACKING in TRACKER_MAPPING:
-        TRACKER_MAPPING.pop(STOP_TRACKING)
-        print(f"Stopped tracking number: {STOP_TRACKING}")
+if INPUT_STOP_TRACKING:
+    if INPUT_STOP_TRACKING in tracking_numbers:
+        tracking_numbers.remove(INPUT_STOP_TRACKING)
+        print(f"Stopped tracking number: {INPUT_STOP_TRACKING}")
+        status_data.pop(INPUT_STOP_TRACKING, None)
     else:
-        print(f"Tracking number {STOP_TRACKING} not found")
+        print(f"Tracking number {INPUT_STOP_TRACKING} not found.")
 
+# Dummy UniUni API fetch function
+def fetch_uniuni_status(tracking_number):
+    """
+    Replace this function with actual API or scraping logic.
+    Returns a string representing the current status.
+    """
+    # Example simulation: Just returns "In Transit" for demo
+    return "In Transit"
+
+# Telegram sending function with logging
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json=payload)
+        print(f"[{datetime.now()}] Telegram response: {r.status_code}, {r.text}")
     except Exception as e:
-        print("Telegram send error:", e)
+        print(f"[{datetime.now()}] Failed to send Telegram message: {e}")
 
-def main():
-    updates = []
+# Main tracking loop
+for tracking_number in tracking_numbers:
+    print(f"[{datetime.now()}] Checking tracking number {tracking_number}")
 
-    for tracking, info in TRACKER_MAPPING.items():
-        tracker_module_name = info["module"]
-        tracker_module = uniuni  # currently only uniuni
-        try:
-            status, checkpoint = tracker_module.get_status(tracking)
-            old_status = info.get("last_status")
-            if status != old_status:
-                updates.append(f"{tracking}: {status}\n{checkpoint}")
-                TRACKER_MAPPING[tracking]["last_status"] = status
-        except Exception as e:
-            updates.append(f"{tracking}: ERROR {e}")
+    old_status = status_data.get(tracking_number)
+    new_status = fetch_uniuni_status(tracking_number)
+    print(f"[{datetime.now()}] Old status: {old_status}")
+    print(f"[{datetime.now()}] New status: {new_status}")
 
-    if updates:
-        send_telegram("\n\n".join(updates))
+    if old_status != new_status:
+        status_data[tracking_number] = new_status
+        message = f"Tracking Update for {tracking_number}:\n{new_status}"
+        send_telegram(message)
+    else:
+        print(f"[{datetime.now()}] No change for {tracking_number}, skipping notification.")
 
-    # Save updated statuses
-    with open(STATUS_FILE, "w") as f:
-        json.dump(TRACKER_MAPPING, f)
-
-if __name__ == "__main__":
-    main()
+# Save updated status
+with open(STATUS_FILE, "w") as f:
+    json.dump(status_data, f, indent=2)
