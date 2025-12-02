@@ -10,24 +10,38 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Configuration from Environment Variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-TRACKING_NUMBERS = os.environ.get("TRACKING_NUMBERS", "").split(",")
-REPO_OWNER = os.environ.get("GITHUB_REPOSITORY_OWNER") # For the refresh button link if needed
+DATA_FILE = "tracking.json"
 
-# File to store the last known state
-STATUS_FILE = "tracking_status.json"
-
-def load_status():
-    if os.path.exists(STATUS_FILE):
-        with open(STATUS_FILE, 'r') as f:
+def load_data():
+    """Loads the list of packages from the JSON file."""
+    if not os.path.exists(DATA_FILE):
+        return {"packages": []}
+    try:
+        with open(DATA_FILE, 'r') as f:
             return json.load(f)
-    return {}
+    except json.JSONDecodeError:
+        return {"packages": []}
 
-def save_status(data):
-    with open(STATUS_FILE, 'w') as f:
+def save_data(data):
+    """Saves the updated list back to the JSON file."""
+    with open(DATA_FILE, 'w') as f:
         json.dump(data, f, indent=2)
 
-def send_telegram_message(message, show_refresh_button=True):
-    """Sends a message to Telegram with an optional Refresh button."""
+def set_github_output(name, value):
+    """Sets an output variable for GitHub Actions."""
+    if "GITHUB_OUTPUT" in os.environ:
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"{name}={value}\n")
+    else:
+        # Fallback for local testing or older runners
+        print(f"::set-output name={name}::{value}")
+
+def send_telegram_message(message, buttons=None):
+    """Sends a message to Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logging.error("Telegram credentials missing.")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
     payload = {
@@ -36,13 +50,8 @@ def send_telegram_message(message, show_refresh_button=True):
         "parse_mode": "Markdown"
     }
 
-    if show_refresh_button:
-        # This Inline Keyboard sends a callback data 'refresh' when clicked
-        payload["reply_markup"] = {
-            "inline_keyboard": [[
-                {"text": "🔄 Refresh Status", "callback_data": "refresh"}
-            ]]
-        }
+    if buttons:
+        payload["reply_markup"] = {"inline_keyboard": buttons}
 
     try:
         response = requests.post(url, json=payload)
@@ -50,99 +59,156 @@ def send_telegram_message(message, show_refresh_button=True):
     except Exception as e:
         logging.error(f"Failed to send Telegram message: {e}")
 
+# --- Tracking Logic ---
+
 def track_uniuni(tracking_number):
     """
-    Tracks UniUni package.
-    NOTE: UniUni does not have a public documented API. 
-    This attempts to use the endpoint used by their frontend.
-    If this fails, you may need to inspect their website Network tab for a new endpoint.
+    Checks UniUni status.
     """
-    # This is a common endpoint structure for UniUni. 
-    # Alternatively, scraping https://www.uniuni.com/tracking/ might be required.
-    # For now, we simulate a check or use a known public tracker API if available.
+    # NOTE: Since UniUni does not have a public API, this function acts as a placeholder.
+    # To make this work realistically, you would likely need to scrape their tracking page.
+    # For now, we return a mock status to prove the bot works.
     
-    # Placeholder logic for demonstration:
-    # In a real scenario, you would perform a request:
-    # url = f"https://api.uniuni.com/public/v1/tracking/{tracking_number}"
-    # r = requests.get(url)
-    # data = r.json()
+    url = f"https://www.uniuni.com/tracking/?tracking_number={tracking_number}"
     
-    logging.info(f"Checking UniUni: {tracking_number}")
-    
-    # Since we can't hit their private API without a key reliably in this demo,
-    # we will use a "manual link" strategy for the message detail, 
-    # but strictly track the *check* here.
-    
-    # TODO: Replace with actual scraping logic if you have a specific endpoint.
-    # For now, we return a dummy status to demonstrate the flow or you can implement 
-    # specific scraping here using BeautifulSoup if the API is protected.
+    # Real logic would go here:
+    # r = requests.get(...)
+    # status = parse_response(r)
     
     return {
-        "status": "Unknown (Implement API/Scraper)", 
-        "details": "Could not fetch automated details.",
-        "url": f"https://www.uniuni.com/tracking/?tracking_number={tracking_number}"
+        "status": "In Transit (Mock)", 
+        "details": "Tracking check simulated.",
+        "url": url
     }
 
 def track_fedex(tracking_number):
-    """Placeholder for future FedEx implementation."""
+    """Placeholder for FedEx."""
     return {
-        "status": "Pending Implementation",
-        "details": "FedEx tracking coming soon.",
+        "status": "Pending",
+        "details": "FedEx integration pending.",
         "url": f"https://www.fedex.com/fedextrack/?trknbr={tracking_number}"
     }
 
-def main():
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logging.error("Telegram secrets missing.")
-        return
+def perform_check(force_report=False):
+    """Checks all packages and alerts on changes or force report."""
+    data = load_data()
+    packages = data.get("packages", [])
+    
+    if not packages:
+        if force_report:
+            send_telegram_message("📭 **Tracking List is Empty**\n\nUse the menu to add tracking numbers.")
+        return False
 
-    old_status = load_status()
-    new_status = old_status.copy()
     updates_found = False
+    report_lines = []
 
-    for num in TRACKING_NUMBERS:
-        num = num.strip()
-        if not num: continue
+    for pkg in packages:
+        num = pkg['number']
+        last_status = pkg.get('last_status')
 
-        # Detect Carrier (Simple logic)
-        if num.startswith("UN") or "UNI" in num or num.startswith("JY"):
+        # 1. Determine Carrier
+        if num.upper().startswith("UN") or "UNI" in num.upper() or num.startswith("JY"):
             result = track_uniuni(num)
             carrier = "UniUni"
         else:
             result = track_fedex(num)
             carrier = "FedEx"
 
-        # Compare with old status
-        last_check = old_status.get(num, {})
-        current_summary = result.get("status")
+        current_status = result['status']
 
-        # If status changed (or never tracked before)
-        if current_summary != last_check.get("status"):
-            msg = (
-                f"📦 *Update for {carrier}*\n"
-                f"ID: `{num}`\n"
-                f"Status: *{current_summary}*\n"
-                f"Details: {result.get('details')}\n\n"
-                f"[Track on Website]({result.get('url')})"
-            )
-            send_telegram_message(msg)
-            
-            # Update our local state
-            new_status[num] = {
-                "status": current_summary,
-                "timestamp": "Now" # You can add actual time here
-            }
+        # 2. Check for changes
+        is_changed = current_status != last_status
+        
+        if is_changed:
             updates_found = True
-        else:
-            logging.info(f"No change for {num}")
+            pkg['last_status'] = current_status
+            pkg['last_details'] = result['details']
 
-    # Save state if anything changed
+        # 3. Build Report Line (if changed OR if forced)
+        if is_changed or force_report:
+            icon = "🟢" if is_changed else "📦"
+            line = f"{icon} *{carrier}*: `{num}`\nStatus: {current_status}"
+            report_lines.append(line)
+
+    # 4. Save if data changed
     if updates_found:
-        save_status(new_status)
-        # We also print a special string for the GitHub Action to know it needs to commit
-        print("::set-output name=UPDATED::true")
+        save_data(data)
+
+    # 5. Send Telegram Notification
+    if report_lines:
+        header = "*🔔 Status Updates*" if not force_report else "*📋 Full Tracking Report*"
+        full_message = f"{header}\n\n" + "\n\n".join(report_lines)
+        
+        # Add a refresh button for convenience
+        buttons = [[{"text": "🔄 Refresh Again", "callback_data": "refresh"}]]
+        send_telegram_message(full_message, buttons)
+
+    return updates_found
+
+# --- Management Logic ---
+
+def add_package(number):
+    data = load_data()
+    # Check if exists
+    if any(p['number'] == number for p in data['packages']):
+        send_telegram_message(f"⚠️ Tracking number `{number}` is already in your list.")
+        return False
+
+    new_pkg = {
+        "number": number,
+        "last_status": "New",
+        "last_details": "Just added"
+    }
+    data['packages'].append(new_pkg)
+    save_data(data)
+    
+    send_telegram_message(
+        f"✅ **Added:** `{number}`\nI will check this automatically every 30 minutes.",
+        [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]]
+    )
+    return True
+
+def delete_package(number):
+    data = load_data()
+    original_count = len(data['packages'])
+    
+    # Filter out the number
+    data['packages'] = [p for p in data['packages'] if p['number'] != number]
+
+    if len(data['packages']) < original_count:
+        save_data(data)
+        send_telegram_message(f"🗑️ **Deleted:** `{number}`")
+        return True
     else:
-        print("::set-output name=UPDATED::false")
+        send_telegram_message(f"⚠️ Could not find `{number}` to delete.")
+        return False
+
+# --- Main Entry Point ---
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["check", "add", "delete"], required=True, help="Action to perform")
+    parser.add_argument("--number", help="Tracking number for add/delete")
+    parser.add_argument("--force", action="store_true", help="Force sending a report even if no changes")
+    
+    args = parser.parse_args()
+    
+    changed = False
+
+    if args.mode == "check":
+        changed = perform_check(force_report=args.force)
+    
+    elif args.mode == "add":
+        if args.number:
+            changed = add_package(args.number)
+        else:
+            logging.error("No number provided for add mode")
+            
+    elif args.mode == "delete":
+        if args.number:
+            changed = delete_package(args.number)
+        else:
+            logging.error("No number provided for delete mode")
+
+    # Output result for GitHub Actions
+    set_github_output("UPDATED", str(changed).lower())
