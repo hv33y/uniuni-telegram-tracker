@@ -2,9 +2,13 @@ name: UniUni Tracker
 
 on:
   schedule:
-    # Runs every 30 minutes
     - cron: "*/30 * * * *"
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:
+    inputs:
+      RESET_TRACKING:
+        description: 'Reset all tracking statuses and resend notifications'
+        required: false
+        default: 'no'
 
 jobs:
   track:
@@ -27,6 +31,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           UNIUNI_API_KEY: ${{ secrets.UNIUNI_API_KEY }}
-          INPUT_ADD_TRACKING: N25T1D1344920001  # Add tracking numbers here
-          INPUT_STOP_TRACKING: ""                # Remove tracking numbers here
+          INPUT_RESET_TRACKING: ${{ github.event.inputs.RESET_TRACKING }}
         run: python main.py
