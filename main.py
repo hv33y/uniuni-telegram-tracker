@@ -2,88 +2,77 @@ import os
 import json
 import requests
 from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+import smtplib
 
-# --- Config ---
+# ENV VARIABLES
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 UNIUNI_API_KEY = os.getenv("UNIUNI_API_KEY")
 
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    raise Exception("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID!")
-if not UNIUNI_API_KEY:
-    print("[WARN] UNIUNI_API_KEY not set. UniUni tracking will be skipped.")
+TRACKING_FILE = "tracking.json"
 
-STATUS_FILE = "status.json"
-TRACKING_FILE = "tracking.txt"
-RESET_TRACKING = os.getenv("INPUT_RESET_TRACKING", "no").lower() == "yes"
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not UNIUNI_API_KEY:
+    raise Exception("Missing TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, or UNIUNI_API_KEY!")
 
-# Load previous status
-if os.path.exists(STATUS_FILE) and not RESET_TRACKING:
-    with open(STATUS_FILE, "r") as f:
-        previous_status = json.load(f)
-else:
-    previous_status = {}
-
-current_status = {}
-
-# Load tracking numbers
-TRACKING_NUMBERS = []
+# Load or initialize tracking file
 if os.path.exists(TRACKING_FILE):
     with open(TRACKING_FILE, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                TRACKING_NUMBERS.append(line)
+        tracking_data = json.load(f)
+else:
+    tracking_data = {"uniuni": {}, "fedex": {}}
 
-if not TRACKING_NUMBERS:
-    print("[WARN] No tracking numbers found in tracking.txt")
-    exit(0)
+def save_tracking_file():
+    with open(TRACKING_FILE, "w") as f:
+        json.dump(tracking_data, f, indent=2)
 
-# --- Helper functions ---
-def send_telegram(message):
+# ------------------- Telegram -------------------
+def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    response = requests.post(url, data=data)
-    if not response.ok:
-        print(f"[ERROR] Failed to send Telegram message: {response.text}")
+    resp = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+    if not resp.ok:
+        print(f"[WARN] Failed to send Telegram message: {resp.text}")
 
-def est_from_unix(ts):
-    dt = datetime.utcfromtimestamp(ts) - timedelta(hours=5)
-    return dt.strftime("%Y-%m-%d %H:%M")
-
-# --- UniUni Handler ---
+# ------------------- UniUni -------------------
 def handle_uniuni(tracking):
-    if not UNIUNI_API_KEY:
-        return []
-
-    api_url = f"https://delivery-api.uniuni.ca/cargo/trackinguniuninew?id={tracking}&key={UNIUNI_API_KEY}"
-    resp = requests.get(api_url)
+    url = f"https://delivery-api.uniuni.ca/cargo/trackinguniuninew?id={tracking}&key={UNIUNI_API_KEY}"
+    resp = requests.get(url)
     if not resp.ok:
         print(f"[WARN] UniUni API failed for {tracking}")
         return []
 
     data = resp.json()
-    valid_list = data.get("data", {}).get("valid_tno", [])
     events = []
-
-    if not valid_list:
-        print(f"[WARN] No valid UniUni info for {tracking}")
-        return []
-
-    for spath in valid_list[0].get("spath_list", []):
-        ts = spath.get("pathTime")
-        if ts:
+    for pkg in data.get("data", {}).get("valid_tno", []):
+        for spath in pkg.get("spath_list", []):
+            ts_epoch = spath.get("pathTime")
+            if ts_epoch:
+                # Convert to EST (UTC-5)
+                dt = datetime.utcfromtimestamp(ts_epoch) - timedelta(hours=5)
+                time_str = dt.strftime("%Y-%m-%d %H:%M")
+            else:
+                time_str = "Unknown"
             events.append({
-                "time": est_from_unix(int(ts)),
-                "status": spath.get("pathInfo"),
+                "time": time_str,
+                "status": spath.get("pathInfo", ""),
                 "location": spath.get("pathAddr", "")
             })
     return events
 
-# --- FedEx Handler ---
+# ------------------- FedEx -------------------
 def handle_fedex(tracking):
-    api_url = f"https://www.fedex.com/trackingCal/track?data={{\"TrackPackagesRequest\":{\"appType\":\"wtrk\",\"trackingInfo\":[{{\"trackingNumberInfo\":{{\"trackingNumber\":\"{tracking}\"}}}}],\"trackingNumberInfo\":{\"trackingNumber\":\"{tracking}\"},\"action\":\"trackpackages\",\"language\":\"en\",\"locale\":\"en_US\",\"version\":\"1\"}}}}"
-    resp = requests.get(api_url)
+    url = "https://www.fedex.com/trackingCal/track"
+    payload = {
+        "TrackPackagesRequest": {
+            "appType": "wtrk",
+            "trackingInfo": [{"trackingNumberInfo": {"trackingNumber": tracking}}],
+            "action": "trackpackages",
+            "language": "en",
+            "locale": "en_US",
+            "version": "1"
+        }
+    }
+    resp = requests.get(url, params={"data": json.dumps(payload)})
     if not resp.ok:
         print(f"[WARN] FedEx API failed for {tracking}")
         return []
@@ -94,7 +83,11 @@ def handle_fedex(tracking):
     for pkg in data.get("TrackPackagesResponse", {}).get("packageList", []):
         for event in pkg.get("scanEventList", []):
             ts = event.get("date")  # ISO format
-            time_str = ts.replace("T", " ").split("-")[0] if ts else "Unknown"
+            if ts:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00")) - timedelta(hours=5)  # EST
+                time_str = dt.strftime("%Y-%m-%d %H:%M")
+            else:
+                time_str = "Unknown"
             events.append({
                 "time": time_str,
                 "status": event.get("status", ""),
@@ -102,55 +95,50 @@ def handle_fedex(tracking):
             })
     return events
 
-# --- Main processing ---
-uniuni_updates = []
-fedex_updates = []
-
-for tracking in TRACKING_NUMBERS:
-    print(f"[INFO] Checking tracking number {tracking}")
-
-    if tracking.startswith("N25"):
-        events = handle_uniuni(tracking)
-        if not events or previous_status.get(tracking) == events:
+# ------------------- Process tracking -------------------
+def process_tracking(tracker_type):
+    new_events = []
+    for tracking, last_status in tracking_data.get(tracker_type, {}).items():
+        if tracker_type == "uniuni":
+            events = handle_uniuni(tracking)
+        elif tracker_type == "fedex":
+            events = handle_fedex(tracking)
+        else:
             continue
-        uniuni_updates.append((tracking, events))
-        current_status[tracking] = events
 
-    elif tracking.startswith("FE"):
-        events = handle_fedex(tracking)
-        if not events or previous_status.get(tracking) == events:
+        if not events:
+            print(f"[WARN] No events for {tracking}")
             continue
-        fedex_updates.append((tracking, events))
-        current_status[tracking] = events
 
-    else:
-        print(f"[WARN] Unknown carrier for {tracking}")
-        continue
+        # Check if last event is new
+        latest = events[-1]
+        last = last_status.get("last_event")
+        if last != latest:
+            # Update status
+            tracking_data[tracker_type][tracking]["last_event"] = latest
+            new_events.append((tracking, latest))
 
-# --- Send Telegram message ---
-messages = []
+    return new_events
 
-if uniuni_updates:
-    messages.append("**UniUni Tracker Updates:**")
-    for tracking, events in uniuni_updates:
-        messages.append(f"Tracking: {tracking}")
-        for ev in events:
-            messages.append(f"{ev['time']} | {ev['location']} | {ev['status']}")
-        messages.append("")
+# ------------------- Send notifications -------------------
+def notify(events, tracker_type):
+    for tracking, event in events:
+        msg = f"{tracker_type.upper()} Tracking Update for {tracking}:\n{event['time']} - {event['status']}"
+        if event["location"]:
+            msg += f" ({event['location']})"
+        send_telegram(msg)
 
-if fedex_updates:
-    messages.append("**FedEx Tracker Updates:**")
-    for tracking, events in fedex_updates:
-        messages.append(f"Tracking: {tracking}")
-        for ev in events:
-            messages.append(f"{ev['time']} | {ev['location']} | {ev['status']}")
-        messages.append("")
+# ------------------- MAIN -------------------
+if __name__ == "__main__":
+    # Ensure all tracking numbers have last_event structure
+    for tracker_type in ["uniuni", "fedex"]:
+        for tracking in tracking_data.get(tracker_type, {}):
+            tracking_data[tracker_type][tracking].setdefault("last_event", None)
 
-if messages:
-    send_telegram("\n".join(messages))
-    print("[INFO] Sent updates to Telegram")
-else:
-    print("[INFO] No new updates to send")
+    uniuni_events = process_tracking("uniuni")
+    fedex_events = process_tracking("fedex")
 
-with open(STATUS_FILE, "w") as f:
-    json.dump(current_status, f, indent=2)
+    notify(uniuni_events, "uniuni")
+    notify(fedex_events, "fedex")
+
+    save_tracking_file()
