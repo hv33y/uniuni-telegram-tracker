@@ -2,7 +2,6 @@ import os
 import json
 import requests
 from datetime import datetime, timedelta
-from email.utils import formataddr
 
 # Telegram config
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -12,20 +11,33 @@ UNIUNI_API_KEY = os.getenv("UNIUNI_API_KEY")
 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not UNIUNI_API_KEY:
     raise Exception("Missing TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, or UNIUNI_API_KEY!")
 
-# Tracking numbers (comma-separated)
-TRACKING_NUMBERS = os.getenv("INPUT_ADD_TRACKING", "").split(",")
-STOP_TRACKING = os.getenv("INPUT_STOP_TRACKING", "").split(",")
-
 STATUS_FILE = "status.json"
+TRACKING_FILE = "tracking.txt"
+
+# Workflow input to reset all statuses
+RESET_TRACKING = os.getenv("INPUT_RESET_TRACKING", "no").lower() == "yes"
 
 # Load previous status to avoid duplicate notifications
-if os.path.exists(STATUS_FILE):
+if os.path.exists(STATUS_FILE) and not RESET_TRACKING:
     with open(STATUS_FILE, "r") as f:
         previous_status = json.load(f)
 else:
     previous_status = {}
 
 current_status = {}
+
+# Read tracking numbers from file
+TRACKING_NUMBERS = []
+if os.path.exists(TRACKING_FILE):
+    with open(TRACKING_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                TRACKING_NUMBERS.append(line)
+
+if not TRACKING_NUMBERS:
+    print("[WARN] No tracking numbers found in tracking.txt")
+    exit(0)
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -35,15 +47,10 @@ def send_telegram(message):
         print(f"[ERROR] Failed to send Telegram message: {response.text}")
 
 def est_from_unix(ts):
-    # Convert Unix timestamp to EST (UTC-5)
     dt = datetime.utcfromtimestamp(ts) - timedelta(hours=5)
     return dt.strftime("%Y-%m-%d %H:%M")
 
 for tracking in TRACKING_NUMBERS:
-    tracking = tracking.strip()
-    if not tracking or tracking in STOP_TRACKING:
-        continue
-
     print(f"[INFO] Checking tracking number {tracking}")
     api_url = f"https://delivery-api.uniuni.ca/cargo/trackinguniuninew?id={tracking}&key={UNIUNI_API_KEY}"
     resp = requests.get(api_url)
