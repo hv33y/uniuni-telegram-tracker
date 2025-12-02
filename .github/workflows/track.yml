@@ -2,7 +2,7 @@ name: UniUni Bot Manager
 
 on:
   schedule:
-    - cron: '*/30 * * * *' # Auto-check every 30 mins
+    - cron: '*/30 * * * *'
   repository_dispatch:
     types: [bot_command]
 
@@ -24,34 +24,37 @@ jobs:
       - name: Install Dependencies
         run: pip install requests
 
-      # CASE 1: Scheduled Run (Standard Check)
+      # CASE 1: Scheduled Run (Runs for ALL users)
       - name: Run Scheduled Check
         if: github.event_name == 'schedule'
         id: scheduled_run
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # FedEx Keys
           FEDEX_CLIENT_ID: ${{ secrets.FEDEX_CLIENT_ID }}
           FEDEX_CLIENT_SECRET: ${{ secrets.FEDEX_CLIENT_SECRET }}
         run: python main.py --mode check
 
-      # CASE 2: Manual Command (Add/Delete/Force Check from Telegram)
+      # CASE 2: Manual Command (Runs for SPECIFIC user)
       - name: Run Manual Command
         if: github.event_name == 'repository_dispatch'
         id: manual_run
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # FedEx Keys
           FEDEX_CLIENT_ID: ${{ secrets.FEDEX_CLIENT_ID }}
           FEDEX_CLIENT_SECRET: ${{ secrets.FEDEX_CLIENT_SECRET }}
         run: |
           MODE="${{ github.event.client_payload.mode }}"
           NUMBER="${{ github.event.client_payload.number }}"
           FORCE="${{ github.event.client_payload.force }}"
+          USER_ID="${{ github.event.client_payload.chat_id }}"
           
           CMD="python main.py --mode $MODE"
+          
+          if [ ! -z "$USER_ID" ]; then
+            CMD="$CMD --user_id $USER_ID"
+          fi
           
           if [ ! -z "$NUMBER" ]; then
             CMD="$CMD --number $NUMBER"
@@ -61,11 +64,10 @@ jobs:
             CMD="$CMD --force"
           fi
           
-          echo "Executing Command: $CMD"
+          echo "Executing: $CMD"
           $CMD
 
-      # Commit changes to tracking.json if the script reported an update
-      - name: Commit Changes to Data File
+      - name: Commit Changes
         if: steps.scheduled_run.outputs.UPDATED == 'true' || steps.manual_run.outputs.UPDATED == 'true'
         run: |
           git config --global user.name 'PackageBot'
