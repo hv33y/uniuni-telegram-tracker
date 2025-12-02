@@ -2,8 +2,8 @@
   "packages": [
     {
       "number": "N25T1D1344920001",
-      "last_status": "In Transit (Mock)",
-      "last_details": "Tracking check simulated."
+      "last_status": "Error",
+      "last_details": "Failed to parse tracking data."
     }
   ]
 }
