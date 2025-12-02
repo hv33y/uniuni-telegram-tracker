@@ -1,35 +1,42 @@
-name: UniUni Tracker
+name: Track Packages
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/15 * * * *" # every 15 minutes
   workflow_dispatch:
-    inputs:
-      RESET_TRACKING:
-        description: 'Reset all tracking statuses and resend notifications'
-        required: false
-        default: 'no'
 
 jobs:
-  track:
+  uniuni:
+    name: UniUni Tracking
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: 3.x
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Run UniUni Tracker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           UNIUNI_API_KEY: ${{ secrets.UNIUNI_API_KEY }}
-          INPUT_RESET_TRACKING: ${{ github.event.inputs.RESET_TRACKING }}
+          INPUT_RESET_TRACKING: "no"
+        run: python main.py
+
+  fedex:
+    name: FedEx Tracking
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: 3.x
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run FedEx Tracker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          INPUT_RESET_TRACKING: "no"
         run: python main.py
