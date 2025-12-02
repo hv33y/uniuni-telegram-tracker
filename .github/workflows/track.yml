@@ -1,38 +1,44 @@
-name: Tracking Bot
+name: Track UniUni Packages
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"  # runs every 30 minutes
   workflow_dispatch:
     inputs:
       add_tracking:
-        description: "Add a new tracking number (leave empty to skip)"
+        description: 'Add a tracking number'
         required: false
-        default: ""
+        default: ''
       stop_tracking:
-        description: "Stop tracking a number permanently (leave empty to skip)"
+        description: 'Stop tracking a number'
         required: false
-        default: ""
-
-permissions:
-  contents: write  # ensures workflow can commit files
+        default: ''
+  schedule:
+    # Every 15 minutes
+    - cron: '*/15 * * * *'
 
 jobs:
   track:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      # Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          persist-credentials: true
 
-      - name: Set up Python
+      # Setup Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.x"
+          python-version: 3.x
 
+      # Install dependencies
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 pytz
 
-      - name: Run tracker
+      # Run main.py
+      - name: Run tracking script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -40,11 +46,13 @@ jobs:
           INPUT_STOP_TRACKING: ${{ github.event.inputs.stop_tracking }}
         run: python main.py
 
-      - name: Commit and push updated statuses
+      # Commit updated status.json if changed
+      - name: Commit updates
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github-actions.com"
           git add status.json
           git commit -m "Update tracking mapping" || echo "No changes to commit"
-          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
-          git push origin HEAD:master
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
