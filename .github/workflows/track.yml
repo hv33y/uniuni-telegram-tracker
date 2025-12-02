@@ -2,7 +2,7 @@ name: Tracking Bot
 
 on:
   schedule:
-    - cron: "*/30 * * * *"  # every 30 minutes
+    - cron: "*/30 * * * *"  # runs every 30 minutes
   workflow_dispatch:
     inputs:
       add_tracking:
@@ -14,11 +14,14 @@ on:
         required: false
         default: ""
 
+permissions:
+  contents: write  # ensures workflow can commit files
+
 jobs:
   track:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -26,10 +29,10 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Tracker
+      - name: Run tracker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -37,7 +40,7 @@ jobs:
           INPUT_STOP_TRACKING: ${{ github.event.inputs.stop_tracking }}
         run: python main.py
 
-      - name: Commit updated statuses
+      - name: Commit and push updated statuses
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github-actions.com"
@@ -45,6 +48,3 @@ jobs:
           git commit -m "Update tracking mapping" || echo "No changes to commit"
           git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
           git push origin HEAD:master
-
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
