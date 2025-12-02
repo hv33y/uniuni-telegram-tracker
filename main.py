@@ -68,75 +68,89 @@ def send_telegram_message(message, buttons=None):
 
 def track_uniuni(tracking_number):
     """
-    Fetches REAL tracking data from UniUni.
+    Fetches REAL tracking data from UniUni with granular error handling.
     """
+    # Ensure uppercase as tracking numbers are often case-sensitive in backend
+    tracking_number = tracking_number.upper()
+    
     url = f"https://t.uniuni.com/api/v1/tracking/{tracking_number}"
     tracking_url = f"https://www.uniuni.com/tracking/?tracking_number={tracking_number}"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept": "application/json",
-        "Referer": "https://www.uniuni.com/"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.uniuni.com/",
+        "Origin": "https://www.uniuni.com"
     }
 
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=20)
         
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Note: The structure of data varies. We check typical fields.
-            # Assuming data structure: { "code": "200", "data": { "tracks": [...], "status": "..." } }
-            
-            if data.get("code") != "200" and data.get("code") != 200:
-                 return {
-                    "status": "Check Website",
-                    "details": "Tracking info not found or restricted.",
-                    "url": tracking_url
-                }
-
-            # Parse the specific 'data' payload
-            payload = data.get("data", {})
-            tracks = payload.get("tracks", [])
-            
-            if not tracks:
-                return {
-                    "status": "Label Created",
-                    "details": "No scanning events yet.",
-                    "url": tracking_url
-                }
-
-            # Get the most recent event (usually first or last in list, we sort to be safe)
-            # UniUni usually returns reverse chronological, but let's verify.
-            # We assume index 0 is latest if sorted desc, but let's just grab the first one provided.
-            latest_event = tracks[0] 
-            
-            description = latest_event.get("scanType", "Update")
-            location = latest_event.get("scanCity", "")
-            timestamp = latest_event.get("scanTime", "")
-
-            status_text = f"{description}"
-            if location:
-                status_text += f" ({location})"
-            
-            return {
-                "status": "Active", # Simplified status
-                "details": f"{status_text} @ {timestamp}",
-                "url": tracking_url
-            }
-
-        else:
+        # 1. Handle HTTP Errors
+        if response.status_code != 200:
             return {
                 "status": f"HTTP {response.status_code}",
-                "details": "Could not connect to UniUni API.",
+                "details": f"Server returned error code {response.status_code}.",
                 "url": tracking_url
             }
+
+        # 2. Try Parsing JSON
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            return {
+                "status": "Parse Error",
+                "details": "API returned invalid JSON (likely HTML or Cloudflare block).",
+                "url": tracking_url
+            }
+
+        # 3. Validate API Response Structure
+        # Expected format: { "code": "200", "data": { "tracks": [...] } }
+        code = str(data.get("code", ""))
+        
+        if code != "200":
+             msg = data.get("msg") or data.get("message") or "Unknown API error"
+             return {
+                "status": "API Error",
+                "details": f"API returned code {code}: {msg}",
+                "url": tracking_url
+            }
+
+        payload = data.get("data", {})
+        tracks = payload.get("tracks", [])
+        
+        if not tracks:
+            # Check for top-level status if tracks are missing
+            status_str = payload.get("status", "No Events")
+            return {
+                "status": status_str,
+                "details": "No detailed scan events found yet.",
+                "url": tracking_url
+            }
+
+        # 4. Extract Latest Event
+        # UniUni typically provides tracks in reverse chronological order (index 0 is newest)
+        latest_event = tracks[0] 
+        
+        description = latest_event.get("scanType", "Update")
+        location = latest_event.get("scanCity", "")
+        timestamp = latest_event.get("scanTime", "")
+
+        status_text = f"{description}"
+        if location:
+            status_text += f" ({location})"
+        
+        return {
+            "status": "Active", 
+            "details": f"{status_text} @ {timestamp}",
+            "url": tracking_url
+        }
 
     except Exception as e:
         logging.error(f"UniUni Scan Error: {e}")
         return {
-            "status": "Error",
-            "details": "Failed to parse tracking data.",
+            "status": "System Error",
+            "details": f"Script Error: {str(e)}",
             "url": tracking_url
         }
 
