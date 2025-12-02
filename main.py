@@ -68,81 +68,112 @@ def send_telegram_message(message, buttons=None):
 
 def track_uniuni(tracking_number):
     """
-    Fetches REAL tracking data from UniUni with granular error handling.
+    Fetches REAL tracking data from UniUni using the delivery-api endpoint.
     """
-    # Ensure uppercase as tracking numbers are often case-sensitive in backend
-    tracking_number = tracking_number.upper()
+    # Key provided by user investigation (Public Web Key)
+    API_KEY = "SMq45nJhQuNR3WHsJA6N" 
     
-    url = f"https://t.uniuni.com/api/v1/tracking/{tracking_number}"
+    url = "https://delivery-api.uniuni.ca/cargo/trackinguniuninew"
+    params = {
+        "id": tracking_number,
+        "key": API_KEY
+    }
+    
     tracking_url = f"https://www.uniuni.com/tracking/?tracking_number={tracking_number}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Referer": "https://www.uniuni.com/",
-        "Origin": "https://www.uniuni.com"
+        "Origin": "https://www.uniuni.com",
+        "Referer": "https://www.uniuni.com/"
     }
 
     try:
-        response = requests.get(url, headers=headers, timeout=20)
+        response = requests.get(url, params=params, headers=headers, timeout=20)
         
-        # 1. Handle HTTP Errors
         if response.status_code != 200:
             return {
                 "status": f"HTTP {response.status_code}",
-                "details": f"Server returned error code {response.status_code}.",
+                "details": "Server returned error.",
                 "url": tracking_url
             }
 
-        # 2. Try Parsing JSON
         try:
             data = response.json()
         except json.JSONDecodeError:
             return {
                 "status": "Parse Error",
-                "details": "API returned invalid JSON (likely HTML or Cloudflare block).",
+                "details": "API returned invalid JSON.",
                 "url": tracking_url
             }
 
-        # 3. Validate API Response Structure
-        # Expected format: { "code": "200", "data": { "tracks": [...] } }
-        code = str(data.get("code", ""))
+        # Structure analysis based on provided JSON
+        # Root -> data -> valid_tno (array) -> [0] -> spath_list (array)
         
-        if code != "200":
-             msg = data.get("msg") or data.get("message") or "Unknown API error"
-             return {
-                "status": "API Error",
-                "details": f"API returned code {code}: {msg}",
-                "url": tracking_url
-            }
-
-        payload = data.get("data", {})
-        tracks = payload.get("tracks", [])
+        api_data = data.get("data", {})
         
-        if not tracks:
-            # Check for top-level status if tracks are missing
-            status_str = payload.get("status", "No Events")
+        # Check if tracking number is invalid
+        if api_data.get("invalid_tno"):
             return {
-                "status": status_str,
-                "details": "No detailed scan events found yet.",
+                "status": "Not Found",
+                "details": "Tracking number not found in system.",
                 "url": tracking_url
             }
-
-        # 4. Extract Latest Event
-        # UniUni typically provides tracks in reverse chronological order (index 0 is newest)
-        latest_event = tracks[0] 
+            
+        valid_list = api_data.get("valid_tno", [])
+        if not valid_list:
+            return {
+                "status": "No Data",
+                "details": "No tracking details returned.",
+                "url": tracking_url
+            }
+            
+        # Get the first package object
+        package_obj = valid_list[0]
+        events = package_obj.get("spath_list", [])
         
-        description = latest_event.get("scanType", "Update")
-        location = latest_event.get("scanCity", "")
-        timestamp = latest_event.get("scanTime", "")
-
-        status_text = f"{description}"
-        if location:
+        if not events:
+            return {
+                "status": "Label Created",
+                "details": "No scan events yet.",
+                "url": tracking_url
+            }
+            
+        # Get latest event (Index 0 is latest in provided JSON structure)
+        latest = events[0]
+        
+        description = latest.get("pathInfo") or latest.get("code") or "Update"
+        location = latest.get("pathAddr") or latest.get("pathAddress") or ""
+        
+        # Convert Unix timestamp to readable string
+        # pathTime is integer seconds (e.g., 1763417844)
+        timestamp_raw = latest.get("pathTime")
+        time_str = ""
+        if timestamp_raw:
+            try:
+                dt_object = datetime.fromtimestamp(timestamp_raw)
+                time_str = dt_object.strftime("%Y-%m-%d %H:%M")
+            except:
+                pass
+        
+        status_text = description
+        if location and location not in description:
             status_text += f" ({location})"
         
+        if time_str:
+            full_details = f"{status_text} @ {time_str}"
+        else:
+            full_details = status_text
+
+        # Determine a short status for the header
+        # We can use the order_type or just "Active"
+        status_header = "Active"
+        if "delivered" in description.lower():
+            status_header = "Delivered"
+            
         return {
-            "status": "Active", 
-            "details": f"{status_text} @ {timestamp}",
+            "status": status_header,
+            "details": full_details,
             "url": tracking_url
         }
 
@@ -181,9 +212,6 @@ def perform_check(force_report=False):
         u_num = num.upper()
 
         # --- CARRIER DETECTION ---
-        # Logic: FedEx tracking numbers are usually purely numeric (12, 15, 20, or 22 digits).
-        # Default to UniUni since it's the primary tracker, unless it looks strictly like FedEx.
-        
         if u_num.isdigit() and len(u_num) in [12, 15, 20, 22]:
             result = track_fedex(num)
             carrier = "FedEx"
@@ -192,24 +220,22 @@ def perform_check(force_report=False):
             carrier = "UniUni"
 
         current_details = result['details']
+        current_status = result['status']
         
-        # Compare DETAILS instead of just status, as 'In Transit' might stay the same 
-        # but the location/time updates.
         is_changed = current_details != last_details
         
         if is_changed:
             updates_found = True
-            pkg['last_status'] = result['status']
+            pkg['last_status'] = current_status
             pkg['last_details'] = current_details
 
-        # Build Report Line
         if is_changed or force_report:
             icon = "🟢" if is_changed else "📦"
             
-            # Format the detail text to be clean
+            # Format detail text
             detail_text = current_details
-            if len(detail_text) > 100:
-                detail_text = detail_text[:97] + "..."
+            if len(detail_text) > 200: # Increased limit for better details
+                detail_text = detail_text[:197] + "..."
 
             line = f"{icon} *{carrier}*: `{num}`\n{detail_text}"
             report_lines.append(line)
@@ -229,7 +255,6 @@ def perform_check(force_report=False):
 
 def add_package(number):
     data = load_data()
-    # Normalize input
     number = number.strip()
     
     if any(p['number'] == number for p in data['packages']):
