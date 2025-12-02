@@ -1,49 +1,75 @@
-name: Track Packages
+name: UniUni Bot Manager
 
 on:
   schedule:
-    # Run every 30 minutes
-    - cron: '*/30 * * * *'
-  # Allow manual trigger from GitHub Actions tab
-  workflow_dispatch:
-  # Allow trigger from Telegram (via Cloudflare Worker)
+    - cron: '*/30 * * * *' # Auto-check every 30 mins
+  # Triggered by the Cloudflare Worker when a button is pressed or a command is sent
   repository_dispatch:
-    types: [manual_refresh]
+    types: [bot_command]
 
 permissions:
   contents: write
 
 jobs:
-  track:
+  manage:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+      
+      - name: Install Dependencies
+        run: pip install requests
 
-      - name: Install dependencies
-        run: |
-          pip install requests
-
-      - name: Run Tracker
-        id: run_tracker
+      # CASE 1: Scheduled Run (Standard Check)
+      - name: Run Scheduled Check
+        if: github.event_name == 'schedule'
+        id: scheduled_run
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TRACKING_NUMBERS: ${{ secrets.TRACKING_NUMBERS }}
-        run: python main.py
+        # Execute main.py with mode check
+        run: python main.py --mode check
 
-      - name: Commit Status Update
-        # Only commit if the python script actually changed the json file
-        if: steps.run_tracker.outputs.UPDATED == 'true'
+      # CASE 2: Manual Command (Add/Delete/Force Check from Telegram)
+      - name: Run Manual Command
+        if: github.event_name == 'repository_dispatch'
+        id: manual_run
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Extract payload data sent by Cloudflare Worker
+          MODE="${{ github.event.client_payload.mode }}"
+          NUMBER="${{ github.event.client_payload.number }}"
+          FORCE="${{ github.event.client_payload.force }}"
+          
+          # Construct the command
+          CMD="python main.py --mode $MODE"
+          
+          if [ ! -z "$NUMBER" ]; then
+            CMD="$CMD --number $NUMBER"
+          fi
+          
+          if [ "$FORCE" == "true" ]; then
+            CMD="$CMD --force"
+          fi
+          
+          echo "Executing Command: $CMD"
+          $CMD
+
+      # Commit changes to tracking.json if the script reported an update
+      - name: Commit Changes to Data File
+        # Check output from both possible run steps
+        if: steps.scheduled_run.outputs.UPDATED == 'true' || steps.manual_run.outputs.UPDATED == 'true'
         run: |
           git config --global user.name 'PackageBot'
           git config --global user.email 'bot@noreply.github.com'
-          git add tracking_status.json
+          git add tracking.json
           # [skip ci] prevents this commit from triggering the workflow again
-          git commit -m "Update tracking status [skip ci]"
+          git commit -m "Update tracking data [skip ci]"
           git push
