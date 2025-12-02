@@ -1,130 +1,118 @@
-import json
 import os
+import json
 import requests
-from bs4 import BeautifulSoup
-from datetime import datetime
-import pytz
+from datetime import datetime, timezone, timedelta
 
 STATUS_FILE = "status.json"
 
-# Env variables
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-INPUT_ADD_TRACKING = os.environ.get("INPUT_ADD_TRACKING", "").strip()
-INPUT_STOP_TRACKING = os.environ.get("INPUT_STOP_TRACKING", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+UNIUNI_API_KEY = os.getenv("UNIUNI_API_KEY")
+INPUT_ADD_TRACKING = os.getenv("INPUT_ADD_TRACKING", "").strip()
+INPUT_STOP_TRACKING = os.getenv("INPUT_STOP_TRACKING", "").strip()
 
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    raise Exception("Telegram bot token or chat ID missing!")
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not UNIUNI_API_KEY:
+    raise Exception("Missing TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, or UNIUNI_API_KEY!")
 
-# Load or initialize status mapping
-if os.path.exists(STATUS_FILE):
-    with open(STATUS_FILE, "r") as f:
-        status_data = json.load(f)
-else:
-    status_data = {}
-
-# Manage tracking numbers
-tracking_numbers = list(status_data.keys())
-
-if INPUT_ADD_TRACKING:
-    if INPUT_ADD_TRACKING not in tracking_numbers:
-        tracking_numbers.append(INPUT_ADD_TRACKING)
-        print(f"[INFO] Added tracking number: {INPUT_ADD_TRACKING}")
-    else:
-        print(f"[INFO] Tracking number {INPUT_ADD_TRACKING} already exists.")
-
-if INPUT_STOP_TRACKING:
-    if INPUT_STOP_TRACKING in tracking_numbers:
-        tracking_numbers.remove(INPUT_STOP_TRACKING)
-        status_data.pop(INPUT_STOP_TRACKING, None)
-        print(f"[INFO] Stopped tracking number: {INPUT_STOP_TRACKING}")
-    else:
-        print(f"[INFO] Tracking number {INPUT_STOP_TRACKING} not found.")
-
-# Function to fetch UniUni status
-def fetch_uniuni_status(tracking_number):
-    url = f"https://www.uniuni.com/tracking/?tracking_number={tracking_number}"
+def load_statuses():
     try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"[ERROR] Failed to fetch tracking page: {e}")
-        return None
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    
-    # Find the first row of tracking table (latest event)
-    table = soup.find("table")
-    if not table:
-        print("[WARN] No tracking table found")
-        return None
-    
-    rows = table.find_all("tr")
-    if len(rows) < 2:
-        print("[WARN] No tracking data rows found")
-        return None
-
-    latest_row = rows[1]  # skip header
-    cols = latest_row.find_all("td")
-    if len(cols) < 2:
-        print("[WARN] Not enough columns in tracking row")
-        return None
-
-    status_text = cols[0].get_text(strip=True)
-    time_text = cols[1].get_text(strip=True)
-    location_text = cols[2].get_text(strip=True) if len(cols) > 2 else "N/A"
-
-    # Convert to EST timezone
-    try:
-        # Assuming time_text is in UTC or UniUni local time (adjust if needed)
-        dt = datetime.strptime(time_text, "%Y-%m-%d %H:%M")
-        dt_utc = dt.replace(tzinfo=pytz.UTC)
-        est_tz = pytz.timezone("US/Eastern")
-        dt_est = dt_utc.astimezone(est_tz)
-        formatted_time = dt_est.strftime("%b %d %Y %I:%M %p EST")
+        with open(STATUS_FILE, "r") as f:
+            return json.load(f)
     except:
-        formatted_time = time_text  # fallback
+        return {}
 
-    return {
-        "status": status_text,
-        "location": location_text,
-        "timestamp": formatted_time
-    }
+def save_statuses(data):
+    with open(STATUS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-# Telegram sending
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+def fetch_uniuni_api(tracking_number):
+    url = f"https://delivery-api.uniuni.ca/cargo/trackinguniuninew?id={tracking_number}&key={UNIUNI_API_KEY}"
+    r = requests.get(url, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+def get_latest_event(data):
+    valid_tno = data.get("data", {}).get("valid_tno", [])
+    if not valid_tno:
+        return None
+    t_entry = valid_tno[0]
+    spath_list = t_entry.get("spath_list", [])
+    if not spath_list:
+        return None
+    return spath_list[-1]  # last event = latest
+
+def format_time(ts_seconds):
     try:
-        r = requests.post(url, json=payload)
-        print(f"[INFO] Telegram response: {r.status_code}")
+        dt = datetime.fromtimestamp(ts_seconds, tz=timezone.utc)
+        est = dt - timedelta(hours=5)  # EST (UTC-5)
+        return est.strftime("%Y-%m-%d %H:%M:%S EST")
+    except Exception:
+        return str(ts_seconds)
+
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        print("Telegram:", r.status_code, r.text)
     except Exception as e:
-        print(f"[ERROR] Failed to send Telegram message: {e}")
+        print("Telegram send error:", e)
 
-# Main tracking loop
-for tracking_number in tracking_numbers:
-    print(f"[INFO] Checking tracking number {tracking_number}")
+def main():
+    statuses = load_statuses()
+    updated = False
 
-    new_status = fetch_uniuni_status(tracking_number)
-    if not new_status:
-        continue
+    # Build tracking list
+    tracking_numbers = list(statuses.keys())
+    if INPUT_ADD_TRACKING:
+        if INPUT_ADD_TRACKING not in tracking_numbers:
+            tracking_numbers.append(INPUT_ADD_TRACKING)
+            print(f"[INFO] Added tracking number: {INPUT_ADD_TRACKING}")
+    if INPUT_STOP_TRACKING and INPUT_STOP_TRACKING in tracking_numbers:
+        tracking_numbers.remove(INPUT_STOP_TRACKING)
+        statuses.pop(INPUT_STOP_TRACKING, None)
+        print(f"[INFO] Removed tracking number: {INPUT_STOP_TRACKING}")
 
-    old_status = status_data.get(tracking_number)
+    for tno in tracking_numbers:
+        try:
+            resp = fetch_uniuni_api(tno)
+        except Exception as e:
+            print(f"[ERROR] Fetch API failed for {tno}: {e}")
+            continue
 
-    # Compare latest event timestamp to decide if update is new
-    if not old_status or old_status.get("timestamp") != new_status["timestamp"]:
-        status_data[tracking_number] = new_status
-        message = (
-            f"Tracking Update for {tracking_number}:\n"
-            f"Status: {new_status['status']}\n"
-            f"Location: {new_status['location']}\n"
-            f"Time: {new_status['timestamp']}"
-        )
-        send_telegram(message)
-        print(f"[INFO] Sent Telegram update for {tracking_number}")
-    else:
-        print(f"[INFO] No new update for {tracking_number}, skipping notification.")
+        if resp.get("status") != "SUCCESS":
+            print(f"[WARN] API returned non-success for {tno}: {resp}")
+            continue
 
-# Save updated status
-with open(STATUS_FILE, "w") as f:
-    json.dump(status_data, f, indent=2)
+        event = get_latest_event(resp)
+        if not event:
+            print(f"[WARN] No tracking events found for {tno}")
+            continue
+
+        last_ts = statuses.get(tno, {}).get("pathTime")
+        path_time = event.get("pathTime")
+        if last_ts != path_time:
+            desc = event.get("description_en", "")
+            location = event.get("pathAddr", "")
+            ts_str = format_time(path_time)
+            msg = (
+                f"Tracking Update — {tno}\n"
+                f"Status: {desc}\n"
+                f"Location: {location}\n"
+                f"Time: {ts_str}"
+            )
+            send_telegram(msg)
+            statuses[tno] = {
+                "pathTime": path_time,
+                "description": desc,
+                "location": location
+            }
+            updated = True
+        else:
+            print(f"[INFO] No new update for {tno}")
+
+    if updated or INPUT_ADD_TRACKING or INPUT_STOP_TRACKING:
+        save_statuses(statuses)
+
+if __name__ == "__main__":
+    main()
