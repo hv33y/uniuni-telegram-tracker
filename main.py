@@ -1,237 +1,267 @@
-export default {
-  async fetch(request, env) {
-    if (request.method === "POST") {
-      try {
-        const payload = await request.json();
+import os
+import json
+import requests
+import logging
+import argparse
+from datetime import datetime
 
-        if (payload.callback_query) {
-          const data = payload.callback_query.data;
-          const chatId = payload.callback_query.message.chat.id;
-          const messageId = payload.callback_query.message.message_id;
-          const callbackId = payload.callback_query.id;
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-          // Acknowledge the click immediately
-          await answerCallback(callbackId, "", env);
+# Configuration from Environment Variables
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+DATA_FILE = "tracking.json"
 
-          if (data === "refresh") {
-            await editMessage(chatId, messageId, "🔄 *Requesting update from server...*\nThis takes about 30 seconds for the GitHub Action to start.", null, env);
-            await triggerGitHub(env, "check", null, true); // true = force report
-          } 
-          else if (data === "manage_menu") {
-            await showManageMenu(chatId, messageId, env);
-          }
-          else if (data === "view_all") {
-            await showTrackingList(chatId, messageId, env);
-          }
-          else if (data === "add_item") {
-            await promptForNumber(chatId, env);
-          }
-          else if (data === "delete_menu") {
-            await showDeleteMenu(chatId, messageId, env);
-          }
-          else if (data.startsWith("del_")) {
-            const numberToDelete = data.split("_")[1];
-            await editMessage(chatId, messageId, `🗑️ *Deleting ${numberToDelete}...*`, null, env);
-            await triggerGitHub(env, "delete", numberToDelete);
-          }
-          else if (data === "main_menu") {
-            await showMainMenu(chatId, messageId, env);
-          }
-          
-          return new Response("OK");
-        }
+def load_data():
+    """Loads the list of packages from the JSON file."""
+    if not os.path.exists(DATA_FILE):
+        return {"packages": []}
+    try:
+        with open(DATA_FILE, 'r') as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        logging.warning(f"Error decoding {DATA_FILE}. Returning empty list.")
+        return {"packages": []}
 
-        // Handle Text Messages (For Adding Numbers & /start)
-        if (payload.message && payload.message.text) {
-          const text = payload.message.text.trim();
-          const chatId = payload.message.chat.id;
-          const replyTo = payload.message.reply_to_message;
+def save_data(data):
+    """Saves the updated list back to the JSON file."""
+    try:
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logging.error(f"Failed to save data to {DATA_FILE}: {e}")
 
-          // If this is a reply to our "Send me the number" prompt
-          if (replyTo && replyTo.text === "Please reply with the tracking number:") {
-             // Trim the tracking number and trigger the 'add' action
-             await sendMessage(chatId, `⏳ *Adding ${text} to the list...*\nI'll notify you when it's saved.`, env);
-             await triggerGitHub(env, "add", text);
-             return new Response("OK");
-          }
+def set_github_output(name, value):
+    """Sets an output variable for GitHub Actions."""
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a") as f:
+            f.write(f"{name}={value}\n")
+    else:
+        print(f"::set-output name={name}::{value}")
 
-          // Handle /start command
-          if (text.toLowerCase().startsWith("/start")) {
-             await sendMainMenu(chatId, env);
-          }
-        }
+def send_telegram_message(message, buttons=None):
+    """Sends a message to Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logging.error("Telegram credentials missing.")
+        return
 
-      } catch (e) {
-        console.error("Worker Catch Block Error:", e);
-      }
-    }
-    return new Response("OK");
-  }
-};
-
-// --- UI Functions ---
-
-async function sendMainMenu(chatId, env) {
-  const text = "📦 *Package Tracker Control*\n\nWhat would you like to do?";
-  const buttons = {
-    inline_keyboard: [
-      [{ text: "🔄 Refresh Status (Force Check)", callback_data: "refresh" }],
-      [{ text: "📝 Manage Tracking Numbers", callback_data: "manage_menu" }]
-    ]
-  };
-  await sendMessage(chatId, text, env, buttons);
-}
-
-async function showMainMenu(chatId, messageId, env) {
-    const text = "📦 *Package Tracker Control*\n\nWhat would you like to do?";
-    const buttons = {
-      inline_keyboard: [
-        [{ text: "🔄 Refresh Status (Force Check)", callback_data: "refresh" }],
-        [{ text: "📝 Manage Tracking Numbers", callback_data: "manage_menu" }]
-      ]
-    };
-    await editMessage(chatId, messageId, text, buttons, env);
-}
-
-async function showManageMenu(chatId, messageId, env) {
-  const packages = await fetchPackagesFromGitHub(env);
-  const text = `📝 *Management Menu*\n\nCurrently tracking ${packages.length} packages.`;
-  
-  // Conditionally disable delete button if list is empty
-  const deleteButton = packages.length > 0
-    ? { text: "➖ Delete Number", callback_data: "delete_menu" }
-    : { text: "➖ Delete Number (List Empty)", callback_data: "manage_menu" };
-
-  const buttons = {
-    inline_keyboard: [
-      [{ text: "👀 View All Packages", callback_data: "view_all" }],
-      [{ text: "➕ Add New Number", callback_data: "add_item" }, deleteButton],
-      [{ text: "🔙 Back to Main", callback_data: "main_menu" }]
-    ]
-  };
-  await editMessage(chatId, messageId, text, buttons, env);
-}
-
-async function showTrackingList(chatId, messageId, env) {
-    const packages = await fetchPackagesFromGitHub(env);
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    let text = "*📦 Active Tracking Numbers:*\n\n";
-    if (packages.length === 0) {
-        text += "_No packages found. Use 'Add New Number' to start tracking._";
-    } else {
-        packages.forEach((p, index) => {
-            const num = p.number.toUpperCase();
-            let carrier = 'UniUni'; // Default to UniUni
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+
+    if buttons:
+        payload["reply_markup"] = {"inline_keyboard": buttons}
+
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+    except Exception as e:
+        logging.error(f"Failed to send Telegram message: {e}")
+
+# --- Tracking Logic ---
+
+def track_uniuni(tracking_number):
+    """
+    Fetches REAL tracking data from UniUni.
+    """
+    url = f"https://t.uniuni.com/api/v1/tracking/{tracking_number}"
+    tracking_url = f"https://www.uniuni.com/tracking/?tracking_number={tracking_number}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": "https://www.uniuni.com/"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
             
-            // Only label as FedEx if it looks strictly like FedEx (Numeric)
-            if (/^\d+$/.test(num) && (num.length === 12 || num.length === 15 || num.length === 20 || num.length === 22)) {
-                carrier = 'FedEx';
-            }
+            # Note: The structure of data varies. We check typical fields.
+            # Assuming data structure: { "code": "200", "data": { "tracks": [...], "status": "..." } }
             
-            text += `*${index + 1}.* (${carrier}) \`${p.number}\`\nStatus: _${p.last_status || 'New'}_ \n\n`;
-        });
-    }
+            if data.get("code") != "200" and data.get("code") != 200:
+                 return {
+                    "status": "Check Website",
+                    "details": "Tracking info not found or restricted.",
+                    "url": tracking_url
+                }
 
-    const buttons = {
-        inline_keyboard: [[{ text: "🔙 Back to Management", callback_data: "manage_menu" }]]
-    };
-    await editMessage(chatId, messageId, text, buttons, env);
-}
+            # Parse the specific 'data' payload
+            payload = data.get("data", {})
+            tracks = payload.get("tracks", [])
+            
+            if not tracks:
+                return {
+                    "status": "Label Created",
+                    "details": "No scanning events yet.",
+                    "url": tracking_url
+                }
 
-async function promptForNumber(chatId, env) {
-    // Sends a message that forces the user's client to reply
-    const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-    const payload = {
-        chat_id: chatId,
-        text: "Please reply with the tracking number:",
-        reply_markup: { force_reply: true, selective: true }
-    };
-    await fetch(url, { method: 'POST', body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' }});
-}
+            # Get the most recent event (usually first or last in list, we sort to be safe)
+            # UniUni usually returns reverse chronological, but let's verify.
+            # We assume index 0 is latest if sorted desc, but let's just grab the first one provided.
+            latest_event = tracks[0] 
+            
+            description = latest_event.get("scanType", "Update")
+            location = latest_event.get("scanCity", "")
+            timestamp = latest_event.get("scanTime", "")
 
-async function showDeleteMenu(chatId, messageId, env) {
-    const packages = await fetchPackagesFromGitHub(env);
-    
-    if (packages.length === 0) {
-        await editMessage(chatId, messageId, "⚠️ *No packages to delete.*", {
-            inline_keyboard: [[{ text: "🔙 Back", callback_data: "manage_menu" }]]
-        }, env);
-        return;
-    }
-
-    let buttons = [];
-    // Create buttons for each tracking number
-    packages.forEach(p => {
-        buttons.push([{ text: `❌ ${p.number}`, callback_data: `del_${p.number}` }]);
-    });
-    buttons.push([{ text: "🔙 Back to Management", callback_data: "manage_menu" }]);
-
-    await editMessage(chatId, messageId, "Select a number to delete:", { inline_keyboard: buttons }, env);
-}
-
-// --- Helper API Functions ---
-
-async function fetchPackagesFromGitHub(env) {
-    const url = `https://api.github.com/repos/${env.GITHUB_USER}/${env.GITHUB_REPO}/contents/tracking.json`;
-    
-    // The GITHUB_PAT is required here to read the private tracking.json file
-    const response = await fetch(url, {
-        headers: {
-            "Authorization": `Bearer ${env.GITHUB_PAT}`,
-            "Accept": "application/vnd.github.v3.raw", 
-            "User-Agent": "TelegramBot"
-        }
-    });
-
-    if (!response.ok) return [];
-    try {
-        const data = await response.json();
-        return data.packages || [];
-    } catch (e) {
-        // Handles case where tracking.json is malformed or empty
-        return [];
-    }
-}
-
-async function triggerGitHub(env, mode, number = null, force = false) {
-    // Triggers the repository_dispatch event in main.yml
-    const url = `https://api.github.com/repos/${env.GITHUB_USER}/${env.GITHUB_REPO}/dispatches`;
-    await fetch(url, {
-        method: "POST",
-        headers: {
-            "Accept": "application/vnd.github.v3+json",
-            "Authorization": `Bearer ${env.GITHUB_PAT}`,
-            "User-Agent": "TelegramBot"
-        },
-        body: JSON.stringify({
-            event_type: "bot_command", // Matches the type in main.yml
-            client_payload: {
-                mode: mode,
-                number: number,
-                force: force ? "true" : "false"
+            status_text = f"{description}"
+            if location:
+                status_text += f" ({location})"
+            
+            return {
+                "status": "Active", # Simplified status
+                "details": f"{status_text} @ {timestamp}",
+                "url": tracking_url
             }
-        })
-    });
-}
 
-async function sendMessage(chatId, text, env, replyMarkup = null) {
-    const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-    const payload = { chat_id: chatId, text: text, parse_mode: "Markdown" };
-    if (replyMarkup) payload.reply_markup = replyMarkup;
-    await fetch(url, { method: 'POST', body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' }});
-}
+        else:
+            return {
+                "status": f"HTTP {response.status_code}",
+                "details": "Could not connect to UniUni API.",
+                "url": tracking_url
+            }
 
-async function editMessage(chatId, messageId, text, replyMarkup, env) {
-    const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`;
-    const payload = { chat_id: chatId, message_id: messageId, text: text, parse_mode: "Markdown" };
-    if (replyMarkup) payload.reply_markup = replyMarkup;
-    await fetch(url, { method: 'POST', body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' }});
-}
+    except Exception as e:
+        logging.error(f"UniUni Scan Error: {e}")
+        return {
+            "status": "Error",
+            "details": "Failed to parse tracking data.",
+            "url": tracking_url
+        }
 
-async function answerCallback(callbackId, text, env) {
-  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: callbackId, text: text })
-  });
-}
+def track_fedex(tracking_number):
+    """Placeholder for FedEx tracking."""
+    return {
+        "status": "Pending (FedEx Ready)",
+        "details": "FedEx integration pending.",
+        "url": f"https://www.fedex.com/fedextrack/?trknbr={tracking_number}"
+    }
+
+def perform_check(force_report=False):
+    """Checks all packages and alerts on changes or force report."""
+    data = load_data()
+    packages = data.get("packages", [])
+    
+    if not packages:
+        if force_report:
+            send_telegram_message("📭 **Tracking List is Empty**\n\nUse the menu to add tracking numbers.")
+        return False
+
+    updates_found = False
+    report_lines = []
+
+    for pkg in packages:
+        num = pkg['number']
+        last_details = pkg.get('last_details', '')
+        u_num = num.upper()
+
+        # --- CARRIER DETECTION ---
+        # Logic: FedEx tracking numbers are usually purely numeric (12, 15, 20, or 22 digits).
+        # Default to UniUni since it's the primary tracker, unless it looks strictly like FedEx.
+        
+        if u_num.isdigit() and len(u_num) in [12, 15, 20, 22]:
+            result = track_fedex(num)
+            carrier = "FedEx"
+        else:
+            result = track_uniuni(num)
+            carrier = "UniUni"
+
+        current_details = result['details']
+        
+        # Compare DETAILS instead of just status, as 'In Transit' might stay the same 
+        # but the location/time updates.
+        is_changed = current_details != last_details
+        
+        if is_changed:
+            updates_found = True
+            pkg['last_status'] = result['status']
+            pkg['last_details'] = current_details
+
+        # Build Report Line
+        if is_changed or force_report:
+            icon = "🟢" if is_changed else "📦"
+            
+            # Format the detail text to be clean
+            detail_text = current_details
+            if len(detail_text) > 100:
+                detail_text = detail_text[:97] + "..."
+
+            line = f"{icon} *{carrier}*: `{num}`\n{detail_text}"
+            report_lines.append(line)
+
+    if updates_found:
+        save_data(data)
+
+    if report_lines:
+        header = "*🔔 Status Updates*" if not force_report else "*📋 Full Tracking Report*"
+        full_message = f"{header}\n\n" + "\n\n".join(report_lines)
+        buttons = [[{"text": "🔄 Refresh Again", "callback_data": "refresh"}]]
+        send_telegram_message(full_message, buttons)
+
+    return updates_found
+
+# --- Management Logic ---
+
+def add_package(number):
+    data = load_data()
+    # Normalize input
+    number = number.strip()
+    
+    if any(p['number'] == number for p in data['packages']):
+        send_telegram_message(f"⚠️ Tracking number `{number}` is already in your list.")
+        return False
+
+    new_pkg = {"number": number, "last_status": "New", "last_details": "Just added"}
+    data['packages'].append(new_pkg)
+    save_data(data)
+    
+    send_telegram_message(
+        f"✅ **Added:** `{number}`\nI will check this automatically every 30 minutes.",
+        [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]]
+    )
+    return True
+
+def delete_package(number):
+    data = load_data()
+    original_count = len(data['packages'])
+    data['packages'] = [p for p in data['packages'] if p['number'] != number]
+
+    if len(data['packages']) < original_count:
+        save_data(data)
+        send_telegram_message(f"🗑️ **Deleted:** `{number}`")
+        return True
+    else:
+        send_telegram_message(f"⚠️ Could not find `{number}` to delete.")
+        return False
+
+# --- Main Entry Point ---
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["check", "add", "delete"], required=True)
+    parser.add_argument("--number")
+    parser.add_argument("--force", action="store_true")
+    
+    args = parser.parse_args()
+    
+    changed = False
+
+    if args.mode == "check":
+        changed = perform_check(force_report=args.force)
+    elif args.mode == "add" and args.number:
+        changed = add_package(args.number)
+    elif args.mode == "delete" and args.number:
+        changed = delete_package(args.number)
+
+    set_github_output("UPDATED", str(changed).lower())
