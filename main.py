@@ -43,46 +43,22 @@ def set_github_output(name, value):
     else: print(f"::set-output name={name}::{value}")
 
 def send_telegram_message(chat_id, message, buttons=None, message_id=None):
-    """
-    Sends or Edits a Telegram message.
-    If message_id is provided, it tries to EDIT that message.
-    If edit fails (or no ID), it SENDS a new one.
-    """
     if not TELEGRAM_BOT_TOKEN or not chat_id: return
-
-    # Try EDIT first if we have an ID
+    
     if message_id:
         edit_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
-        edit_payload = {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": message,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True
-        }
+        edit_payload = {"chat_id": chat_id, "message_id": message_id, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True}
         if buttons: edit_payload["reply_markup"] = {"inline_keyboard": buttons}
-        
         try:
             r = requests.post(edit_url, json=edit_payload)
-            if r.status_code == 200: return # Edit successful, stop here
-            logging.warning(f"Edit failed (HTTP {r.status_code}): {r.text}")
-        except Exception as e:
-            logging.error(f"Edit Exception: {e}")
+            if r.status_code == 200: return
+        except: pass
 
-    # Fallback: SEND new message
     send_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    send_payload = {
-        "chat_id": chat_id, 
-        "text": message, 
-        "parse_mode": "Markdown", 
-        "disable_web_page_preview": True
-    }
+    send_payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True}
     if buttons: send_payload["reply_markup"] = {"inline_keyboard": buttons}
-    
-    try: 
-        requests.post(send_url, json=send_payload).raise_for_status()
-    except Exception as e: 
-        logging.error(f"Send Error for {chat_id}: {e}")
+    try: requests.post(send_url, json=send_payload).raise_for_status()
+    except Exception as e: logging.error(f"Send Error for {chat_id}: {e}")
 
 def format_time(timestamp, is_unix=False, custom_format=None):
     if not timestamp: return ""
@@ -95,7 +71,7 @@ def format_time(timestamp, is_unix=False, custom_format=None):
         return dt.strftime("%Y-%m-%d %I:%M %p") 
     except: return str(timestamp)
 
-# --- TRACKING FUNCTIONS (Unchanged logic, compacted for brevity) ---
+# --- TRACKING FUNCTIONS ---
 def track_uniuni(tracking_number, full_history=False):
     API_KEY = "SMq45nJhQuNR3WHsJA6N" 
     url = "https://delivery-api.uniuni.ca/cargo/trackinguniuninew"
@@ -123,9 +99,7 @@ def track_uniuni(tracking_number, full_history=False):
 
 def track_fedex(tracking_number, full_history=False):
     if not FEDEX_CLIENT_ID or not FEDEX_CLIENT_SECRET: return {"status": "Auth Error", "details": "Check Keys", "events": [], "url": ""}
-    # Auth Logic omitted for brevity, assumes working token fetch
     try:
-        # (Using previous working logic)
         token_url = "https://apis.fedex.com/oauth/token"
         r = requests.post(token_url, data={"grant_type": "client_credentials", "client_id": FEDEX_CLIENT_ID, "client_secret": FEDEX_CLIENT_SECRET}, timeout=10)
         token = r.json().get("access_token")
@@ -151,7 +125,37 @@ def track_fedex(tracking_number, full_history=False):
     except Exception as e: return {"status": "Error", "details": str(e), "events": [], "url": ""}
 
 def track_ups(tracking_number, full_history=False):
-    # Link Mode
+    # Try API if keys exist
+    if UPS_CLIENT_ID and UPS_CLIENT_SECRET:
+        try:
+            url = "https://onlinetools.ups.com/security/v1/oauth/token"
+            creds = base64.b64encode(f"{UPS_CLIENT_ID}:{UPS_CLIENT_SECRET}".encode()).decode()
+            r = requests.post(url, headers={"Authorization": f"Basic {creds}", "Content-Type": "application/x-www-form-urlencoded"}, data={"grant_type": "client_credentials"}, timeout=10)
+            token = r.json().get("access_token")
+            if token:
+                url = f"https://onlinetools.ups.com/api/track/v1/details/{tracking_number}"
+                r = requests.get(url, headers={"Authorization": f"Bearer {token}", "transId": "1", "transactionSrc": "Bot"}, timeout=15)
+                if r.status_code == 200:
+                    d = r.json()
+                    pkg = d.get("trackResponse", {}).get("shipment", [])[0].get("package", [])[0]
+                    act = pkg.get("activity", [])
+                    if act:
+                        latest = act[0]
+                        desc = latest.get("status", {}).get("description", "Active")
+                        loc = latest.get("location", {}).get("address", {}).get("city", "")
+                        dt = f"{latest.get('date')} {latest.get('time')}"
+                        tm = format_time(dt, custom_format="%Y%m%d %H%M%S")
+                        det = f"{desc} ({loc}) @ {tm}" if loc else f"{desc} @ {tm}"
+                        
+                        hist = []
+                        if full_history:
+                            for e in act:
+                                t = format_time(f"{e.get('date')} {e.get('time')}", custom_format="%Y%m%d %H%M%S")
+                                l = f"🕒 *{t}*\n└ {e.get('status', {}).get('description')}"
+                                if e.get('location', {}).get('address', {}).get('city'): l += f" ({e.get('location', {}).get('address', {}).get('city')})"
+                                hist.append(l)
+                        return {"status": "Active", "details": det, "events": hist, "url": f"https://www.ups.com/track?loc=en_US&tracknum={tracking_number}"}
+        except: pass
     return {"status": "Link", "details": "Protected. Click to view.", "events": [], "url": f"https://www.ups.com/track?loc=en_US&tracknum={tracking_number}"}
 
 def get_tracker(number):
@@ -172,7 +176,6 @@ def perform_check(force_report=False, specific_user_id=None, msg_id=None):
         user_id = str(user_id)
         packages = users.get(user_id, [])
         if not packages and specific_user_id:
-            # Edit the "Loading" message to say empty
             send_telegram_message(user_id, "📭 **Tracking List is Empty**", [[{"text": "🔙 Back to Main Menu", "callback_data": "main_menu"}]], message_id=msg_id)
             continue
 
@@ -194,14 +197,13 @@ def perform_check(force_report=False, specific_user_id=None, msg_id=None):
                 link = res.get('url', '')
                 disp = f"[{num}]({link})" if link else f"`{num}`"
                 report_lines.append(f"{icon} *{carrier}*: {disp}\n{curr}")
-                if carrier != "UPS":
+                if carrier != "UPS" or (carrier == "UPS" and res['status'] != "Link"):
                     history_buttons.append([{"text": f"📜 History: {num}", "callback_data": f"history_{num}"}])
 
         if report_lines:
             header = "*🔔 Updates*" if not force_report else "*📋 Full Report*"
             msg = f"{header}\n\n" + "\n\n".join(report_lines)
             btns = history_buttons + [[{"text": "🔄 Refresh", "callback_data": "refresh"}], [{"text": "🔙 Back to Main Menu", "callback_data": "main_menu"}]]
-            # Pass msg_id to overwrite the "Loading..." message
             send_telegram_message(user_id, msg, btns, message_id=msg_id)
 
     if updates_found: save_data(data)
@@ -217,8 +219,8 @@ def send_history(number, user_id, msg_id=None):
         if len(events) > 15: events = events[:15] + ["... (older truncated)"]
         msg = f"📜 *History: {carrier}* `{number}`\n\n" + "\n\n".join(events)
     
-    # BACK BUTTON: "view_all" goes back to the list in Worker
-    btns = [[{"text": "🔙 Back to List", "callback_data": "view_all"}], [{"text": "🏠 Main Menu", "callback_data": "main_menu"}]]
+    # FIXED: Back button now triggers 'refresh' to go back to the full report
+    btns = [[{"text": "🔙 Back to Report", "callback_data": "refresh"}], [{"text": "🏠 Main Menu", "callback_data": "main_menu"}]]
     send_telegram_message(user_id, msg, btns, message_id=msg_id)
     return False
 
@@ -228,11 +230,10 @@ if __name__ == "__main__":
     parser.add_argument("--number")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--user_id")
-    parser.add_argument("--message_id") # NEW ARGUMENT
+    parser.add_argument("--message_id")
     args = parser.parse_args()
     
     changed = False
-    # Pass message_id to functions
     if args.mode == "check": 
         changed = perform_check(force_report=args.force, specific_user_id=args.user_id, msg_id=args.message_id)
     elif args.mode == "history": 
@@ -248,7 +249,6 @@ if __name__ == "__main__":
         if not any(p['number'] == n for p in data["users"][uid]):
             data["users"][uid].append({"number": n, "last_status": "New"})
             save_data(data)
-            # Edit the "Adding..." message
             send_telegram_message(uid, f"✅ **Added:** {carrier} `{n}`", [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]], message_id=args.message_id)
             changed = True
         else:
@@ -263,7 +263,6 @@ if __name__ == "__main__":
             if len(data["users"][uid]) < orig:
                 save_data(data)
                 _, carrier = get_tracker(args.number)
-                # Edit the "Deleting..." message
                 send_telegram_message(uid, f"🗑️ **Deleted:** {carrier} `{args.number}`", [[{"text": "🔙 Back to List", "callback_data": "view_all"}]], message_id=args.message_id)
                 changed = True
             else:
