@@ -1,3 +1,4 @@
+# ... existing imports and setup code ...
 import os
 import json
 import requests
@@ -299,7 +300,9 @@ if __name__ == "__main__":
         if not any(p['number'] == args.number.strip() for p in data["users"][user_id]):
             data["users"][user_id].append({"number": args.number.strip(), "last_status": "New"})
             save_data(data)
-            send_telegram_message(user_id, f"✅ **Added:** `{args.number.strip()}`", [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]])
+            # Added carrier name to confirmation message
+            _, carrier = get_tracker(args.number.strip())
+            send_telegram_message(user_id, f"✅ **Added:** {carrier} `{args.number.strip()}`", [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]])
             changed = True
         else: send_telegram_message(user_id, f"⚠️ Exists.", [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]])
     elif args.mode == "delete" and args.number and args.user_id:
@@ -310,7 +313,9 @@ if __name__ == "__main__":
             data["users"][user_id] = [p for p in data["users"][user_id] if p['number'] != args.number]
             if len(data["users"][user_id]) < orig:
                 save_data(data)
-                send_telegram_message(user_id, f"🗑️ **Deleted:** `{args.number}`", [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]])
+                # Updated confirmation message with carrier
+                _, carrier = get_tracker(args.number)
+                send_telegram_message(user_id, f"🗑️ **Deleted:** {carrier} `{args.number}`", [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]])
                 changed = True
             else: send_telegram_message(user_id, f"⚠️ Not found.", [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]])
 
